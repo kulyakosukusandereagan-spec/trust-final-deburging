@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Space Grotesk", sans-serif;
+
+  /* Custom Palette: Ruby Red, Soft Azure, Spring Green */
+  --color-ruby-50: #fff1f2;
+  --color-ruby-100: #ffe4e6;
+  --color-ruby-200: #fecdd3;
+  --color-ruby-500: #e11d48;
+  --color-ruby-600: #d90429;
+  --color-ruby-700: #be123c;
+  --color-ruby-800: #9f1239;
+  --color-ruby-900: #881337;
+
+  --color-azure-50: #f0f9ff;
+  --color-azure-100: #e0f2fe;
+  --color-azure-200: #bae6fd;
+  --color-azure-500: #0284c7;
+  --color-azure-600: #0284c7;
+  --color-azure-700: #0369a1;
+  --color-azure-800: #075985;
+  --color-azure-900: #0c4a6e;
+
+  --color-spring-50: #ecfdf5;
+  --color-spring-100: #d1fae5;
+  --color-spring-200: #a7f3d0;
+  --color-spring-500: #10b981;
+  --color-spring-600: #059669;
+  --color-spring-700: #047857;
+  --color-spring-800: #065f46;
+  --color-spring-900: #064e3b;
+}
+
+/* Custom Brand Color Utilities */
+.bg-ruby-brand {
+  background-color: #d90429;
+}
+.text-ruby-brand {
+  color: #d90429;
+}
+.border-ruby-brand {
+  border-color: #d90429;
+}
+
+.bg-azure-brand {
+  background-color: #0284c7;
+}
+.text-azure-brand {
+  color: #0284c7;
+}
+.border-azure-brand {
+  border-color: #0284c7;
+}
+
+.bg-spring-brand {
+  background-color: #10b981;
+}
+.text-spring-brand {
+  color: #10b981;
+}
+.border-spring-brand {
+  border-color: #10b981;
+}
+
+/* Smooth glassmorphism */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Prevent horizontal layout shifts when modals or print previews open */
+html, body {
+  scrollbar-gutter: stable;
+}
+
+/* POS Thermal Printer Standard Media Rules */
+@media print {
+  #junub-silent-print-iframe {
+    display: block !important;
+  }
+  .junub-no-print {
+    display: none !important;
+  }
+}
+
+

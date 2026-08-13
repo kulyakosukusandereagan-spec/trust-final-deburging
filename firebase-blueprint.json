@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "tenants": {
+      "title": "Tenants",
+      "description": "Pharmacy organizations and branches",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "subdomain": { "type": "string" },
+        "status": { "type": "string" },
+        "plan": { "type": "string" }
+      },
+      "required": ["userId", "name"]
+    },
+    "drugs": {
+      "title": "Drugs",
+      "description": "Pharmacy drug inventory items",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "stock": { "type": "number" }
+      },
+      "required": ["userId", "tenantId", "name"]
+    },
+    "prescriptions": {
+      "title": "Prescriptions",
+      "description": "Doctor prescriptions and clinical requests",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "id": { "type": "string" },
+        "patientName": { "type": "string" },
+        "drugName": { "type": "string" }
+      },
+      "required": ["userId", "tenantId"]
+    },
+    "transactions": {
+      "title": "Transactions",
+      "description": "POS checkout sales transactions and receipts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "id": { "type": "string" },
+        "invoiceNumber": { "type": "string" },
+        "total": { "type": "number" }
+      },
+      "required": ["userId", "tenantId"]
+    },
+    "expenditures": {
+      "title": "Expenditures",
+      "description": "Pharmacy operating expenses and overhead costs",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "id": { "type": "string" },
+        "amount": { "type": "number" },
+        "category": { "type": "string" }
+      },
+      "required": ["userId"]
+    },
+    "batches": {
+      "title": "Batches",
+      "description": "Medicine lot batches and expiry trackings",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "id": { "type": "string" },
+        "batchNumber": { "type": "string" }
+      },
+      "required": ["userId"]
+    },
+    "customers": {
+      "title": "Customers",
+      "description": "Registered patients and institutional clients",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["userId"]
+    },
+    "staff": {
+      "title": "Staff Accounts",
+      "description": "Registered staff members and system user accounts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "required": ["userId", "email"]
+    }
+  }
+}
+

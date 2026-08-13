@@ -1,0 +1,6 @@
+{
+  "name": "Trust Pharmacy Management Software",
+  "description": "Enterprise Pharmacy Management Platform for Junub Pharmacare featuring clinical inventory catalog, POS terminal with local receipt printing, branch clinics, security logs, and modular single-enterprise administration.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
