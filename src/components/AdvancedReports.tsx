@@ -441,11 +441,11 @@ export default function AdvancedReports({
   // Daily Sales line items
   const [dailySalesItems, setDailySalesItems] = useState<any[]>([]);
 
-  // Dynamically resolve real registered staff members across system
+  // Dynamically resolve real registered staff members from Firestore
   const staffList = (() => {
     const map = new Map<string, { name: string; role: string; email: string }>();
 
-    // 1. Tenant staff
+    // 1. Tenant staff (from live Firestore subscription)
     if (activeTenant?.staff && Array.isArray(activeTenant.staff)) {
       activeTenant.staff.forEach((s: any) => {
         if (s.email) {
@@ -458,7 +458,7 @@ export default function AdvancedReports({
       });
     }
 
-    // 2. Staff loaded live from Firestore
+    // 2. Staff loaded live from Firestore staff collection
     if (firestoreStaffList && Array.isArray(firestoreStaffList)) {
       firestoreStaffList.forEach((s: any) => {
         if (s.email && !map.has(s.email.toLowerCase())) {
@@ -471,64 +471,8 @@ export default function AdvancedReports({
       });
     }
 
-    // 2. Registered staff from localStorage
-    try {
-      const regStr = localStorage.getItem('junub_registered_staff');
-      if (regStr) {
-        const regList = JSON.parse(regStr);
-        if (Array.isArray(regList)) {
-          regList.forEach((s: any) => {
-            if (s.email && !map.has(s.email.toLowerCase())) {
-              map.set(s.email.toLowerCase(), {
-                name: s.name || s.email.split('@')[0],
-                role: s.role || 'Pharmacist',
-                email: s.email
-              });
-            }
-          });
-        }
-      }
-    } catch(e) {}
-
-    // 3. Current logged in staff / admin
-    try {
-      const sessStr = localStorage.getItem('junub_pharmacy_user_session');
-      if (sessStr) {
-        const sess = JSON.parse(sessStr);
-        if (sess.email && !map.has(sess.email.toLowerCase())) {
-          map.set(sess.email.toLowerCase(), {
-            name: sess.name || sess.email.split('@')[0],
-            role: sess.role || 'Administrator',
-            email: sess.email
-          });
-        }
-      }
-    } catch(e) {}
-
-    // 4. Extract all real staff who conducted sales transactions across all branches
-    dailySalesItems.forEach((s: any) => {
-      const email = (s.staffEmail || s.cashierEmail || '').toLowerCase();
-      const name = s.staffName || s.cashierName || (email ? email.split('@')[0] : '');
-      if (email && !map.has(email)) {
-        map.set(email, {
-          name: name || email.split('@')[0],
-          role: 'Dispensary Staff',
-          email: s.staffEmail || s.cashierEmail
-        });
-      } else if (name && !email) {
-        const synEmail = `${name.toLowerCase().replace(/\s+/g, '.')}@trustpharmacy.com`;
-        if (!map.has(synEmail)) {
-          map.set(synEmail, {
-            name: name,
-            role: 'Dispensary Staff',
-            email: synEmail
-          });
-        }
-      }
-    });
-
-    // 5. Default admin if empty
-    if (!map.has('junubposcenter@gmail.com') && map.size === 0) {
+    // Default master admin if list is empty
+    if (map.size === 0) {
       map.set('junubposcenter@gmail.com', {
         name: 'Sande Reagan',
         role: 'Administrator',

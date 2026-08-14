@@ -41,7 +41,7 @@ export async function performComprehensiveFactoryReset(): Promise<void> {
 
     // 0. Wipe Firestore Cloud database and re-seed clean baseline
     try {
-      await wipeAndResetFirestoreDatabase('shared-global-tenant-v1');
+      await wipeAndResetFirestoreDatabase();
     } catch (e) {
       console.warn("Notice wiping Firestore database during reset:", e);
     }

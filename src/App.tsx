@@ -29,20 +29,17 @@ const renderLogoIcon = (logo?: string, className = "h-5 w-5", logoUrl?: string) 
   }
 };
 import { Tenant, StaffRole } from './types';
+import { PHARMACY_ID, PHARMACY_NAME, FIXED_BRANCHES, MAX_BRANCHES, isBranchCreationAllowed, isValidBranchId } from './lib/pharmacyConfig';
 import ArchitecturalDashboard from './components/ArchitecturalDashboard';
-import SaaSSimulator from './components/SaaSSimulator';
-import SubscriptionConfigurator from './components/SubscriptionConfigurator';
 import SecurityModule from './components/SecurityModule';
-import SuperAdminPortal from './components/SuperAdminPortal';
 import EnterpriseInventory from './components/EnterpriseInventory';
 import PharmacyPOS from './components/PharmacyPOS';
 import AdvancedReports from './components/AdvancedReports';
 import NotificationEngine from './components/NotificationEngine';
-import SaaSArchitecturalSpecification from './components/SaaSArchitecturalSpecification';
 import BranchesStaffManager from './components/BranchesStaffManager';
 import { SettingsView } from './components/SettingsView';
 import { UserManualModal } from './components/UserManualModal';
-import { auth } from './lib/firebase';
+import { auth, ensureMasterAdminAuthRegistered } from './lib/firebase';
 import modernPharmacyImg from './assets/images/modern_pharmacy_login_1785144360444.jpg';
 import { 
   signInWithEmailAndPassword, 
@@ -51,144 +48,82 @@ import {
   onAuthStateChanged,
   User as FirebaseUser
 } from 'firebase/auth';
-import { 
-  fetchUserFirestoreData, 
-  checkIfUserHasData, 
-  seedUserData,
+import {
+  fetchPharmacyBootstrapData,
+  checkIfPharmacyHasData,
+  ensurePharmacyAndBranchesExist,
   loadDeletedStaffFromFirestore,
   loadStaffFromFirestore,
-  subscribeToStaffFirestore,
-  migrateLocalStorageToFirestore
+  subscribeToStaffFirestore
 } from './lib/firebaseSync';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'simulator' | 'billing' | 'security' | 'superadmin' | 'inventory' | 'pos' | 'reports' | 'notifications' | 'architecture' | 'branches' | 'expenditures' | 'settings' | 'login' | 'configurator' | 'spec'>('dashboard');
-  
-  // Mandatory default branches (Strictly Trust Pharmacy - maximum 2 branches)
-  const DEFAULT_BRANCHES = [
-    { id: "branch-dt-1", name: "Trust Pharmacy - Main Branch", address: "Airport Road, Juba Town, South Sudan", phone: "+211 922 152 427", isActive: true, registeredAt: "2026-03-15T10:00:00Z" },
-    { id: "branch-dt-2", name: "Trust Pharmacy - Branch 2", address: "Customs Market Road, Juba, South Sudan", phone: "+211 922 152 428", isActive: true, registeredAt: "2026-03-15T10:00:00Z" }
-  ];
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'billing' | 'security' | 'inventory' | 'pos' | 'reports' | 'notifications' | 'architecture' | 'branches' | 'expenditures' | 'settings' | 'login'>('dashboard');
 
-  // Global single pharmacy locked to Trust Pharmacy Enterprise settings
-  const [tenants, setTenants] = useState<Tenant[]>(() => {
-    const keys = ['trust_pharmacy_tenants', 'junub_local_tenants', 'junub_pharmacy_tenants'];
-    let cachedList: Tenant[] | null = null;
-    for (const k of keys) {
-      const cached = localStorage.getItem(k);
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            cachedList = parsed;
-            break;
-          }
-        } catch (e) {}
-      }
-    }
+  // ---------------------------------------------------------------------
+  // SINGLE-TENANT / FIXED-BRANCH SETUP
+  // `tenants` is kept as a 1-item array (rather than renamed throughout
+  // this large file) to minimize the change surface, but it now always
+  // contains exactly the one TRUST PHARMACY record with the 3 fixed
+  // branches — no multi-tenant switching, no localStorage cache.
+  // ---------------------------------------------------------------------
+  const DEFAULT_BRANCHES = FIXED_BRANCHES.map((b) => ({
+    id: b.id,
+    name: b.name,
+    address: 'Juba, South Sudan',
+    phone: '+211 922 152 427',
+    isActive: true,
+    isMain: b.isMain,
+    registeredAt: '2026-03-15T10:00:00Z',
+  }));
 
-    if (cachedList && cachedList.length > 0) {
-      let delBranchIds: string[] = [];
-      try {
-        delBranchIds = JSON.parse(localStorage.getItem('junub_deleted_branch_ids') || '[]');
-      } catch(e) {}
-      const isValidBranch = (b: any) => b && b.id && !delBranchIds.includes(b.id);
+  const [tenants, setTenants] = useState<Tenant[]>(() => [
+    {
+      id: PHARMACY_ID,
+      name: PHARMACY_NAME,
+      subdomain: 'trustpharmacy',
+      status: 'active',
+      plan: 'enterprise',
+      billingCycle: 'annual',
+      registeredAt: '2026-03-15T10:00:00Z',
+      dbIsolationMode: 'single_tenant',
+      brandingColor: '#0ea5e9',
+      logoIcon: 'cross',
+      address: 'Airport Road, Juba Town, South Sudan',
+      phone: '+211 922 152 427',
+      activePharmacies: 1,
+      maxPharmacies: 1,
+      activeUsers: 0,
+      maxUsers: 50,
+      branches: DEFAULT_BRANCHES,
+      maxBranches: MAX_BRANCHES,
+      staff: [],
+      email: 'info@trustpharmacy.com',
+      telephone: '+211 922 152 427',
+      website: 'www.trustpharmacy.com',
+      taxNumber: 'SSD-TX-TRUST-001',
+      currency: 'SSP',
+      receiptHeader: 'TRUST PHARMACY\nYour Health, Our Priority\nJuba, South Sudan',
+      receiptFooter: 'Thank you for choosing Trust Pharmacy.\nQuality clinical care in South Sudan.',
+      businessRegNo: 'SSD-REG-TRUST-2026',
+      logoUrl: '',
+      usdToSspRate: 3100,
+    },
+  ]);
 
-      return cachedList.map(t => {
-        const bMap = new Map<string, any>();
-        DEFAULT_BRANCHES.forEach(b => { if (isValidBranch(b)) bMap.set(b.id, b); });
-        (t.branches || []).forEach((b: any) => {
-          if (isValidBranch(b)) bMap.set(b.id, b);
-        });
-        return { 
-          ...t, 
-          name: "Trust Pharmacy",
-          maxPharmacies: 2,
-          branches: Array.from(bMap.values()).slice(0, 2) 
-        };
-      });
-    }
-
-    return [
-      {
-        id: "tenant-downtown",
-        name: "Trust Pharmacy",
-        subdomain: "trustpharmacy",
-        status: "active",
-        plan: "enterprise",
-        billingCycle: "annual",
-        registeredAt: "2026-03-15T10:00:00Z",
-        dbIsolationMode: "database_per_tenant",
-        brandingColor: "#0ea5e9", // Sky Blue
-        logoIcon: "cross",
-        address: "Airport Road, Juba Town, South Sudan",
-        phone: "+211 922 152 427",
-        activePharmacies: 2,
-        maxPharmacies: 2,
-        activeUsers: 2,
-        maxUsers: 50,
-        apiRequestsToday: 12450,
-        storageMB: 420,
-        monthlyRevenue: 799,
-        branches: DEFAULT_BRANCHES,
-        staff: [
-          { id: "staff-dt-1", name: "Administrator (Sande Reagan)", email: "junubposcenter@gmail.com", password: "Reagantekki01", role: "Administrator", isActive: true, isVerified: true, branchId: "branch-dt-1" }
-        ],
-        
-        // Clinical single-app parameters:
-        email: "info@trustpharmacy.com",
-        telephone: "+211 922 152 427",
-        website: "www.trustpharmacy.com",
-        taxNumber: "SSD-TX-TRUST-001",
-        currency: "SSP",
-        receiptHeader: "TRUST PHARMACY\nYour Health, Our Priority\nJuba, South Sudan",
-        receiptFooter: "Thank you for choosing Trust Pharmacy.\nQuality clinical care in South Sudan.",
-        businessRegNo: "SSD-REG-TRUST-2026",
-        logoUrl: localStorage.getItem('trust_pharmacy_logo') || "",
-        usdToSspRate: 3100,
-      }
-    ];
-  });
-
+  // Live staff subscription across all 3 branches — Firestore is the only
+  // source of truth, no localStorage mirror.
   useEffect(() => {
-    const unsubStaff = subscribeToStaffFirestore((fsStaff) => {
-      if (fsStaff && fsStaff.length > 0) {
-        setTenants(prev => prev.map(t => {
-          const existingStaff = t.staff || [];
-          const sMap = new Map();
-          existingStaff.forEach((s: any) => { if (s && s.email) sMap.set(s.email.toLowerCase(), s); });
-          fsStaff.forEach((s: any) => { if (s && s.email) sMap.set(s.email.toLowerCase(), s); });
-          const mergedStaffList = Array.from(sMap.values());
-          try {
-            localStorage.setItem('junub_registered_staff', JSON.stringify(mergedStaffList));
-          } catch(e) {}
-          return { ...t, staff: mergedStaffList };
-        }));
-      }
+    const unsubStaff = subscribeToStaffFirestore((fsStaff: any[]) => {
+      setTenants((prev) => prev.map((t) => ({ ...t, staff: fsStaff })));
     });
     return () => unsubStaff();
   }, []);
 
-  const [activeTenantId, setActiveTenantId] = useState<string>(() => {
-    return localStorage.getItem('junub_active_tenant_id') || 'tenant-downtown';
-  });
+  // activeTenantId is always the single pharmacy id now (kept for the many
+  // call sites below that still reference it for currency/receipt settings).
+  const [activeTenantId, setActiveTenantId] = useState<string>(PHARMACY_ID);
 
-  useEffect(() => {
-    if (activeTenantId) {
-      localStorage.setItem('junub_active_tenant_id', activeTenantId);
-    }
-  }, [activeTenantId]);
-
-  // Sync tenants state to LocalStorage automatically whenever changed across all storage keys
-  useEffect(() => {
-    if (tenants && tenants.length > 0) {
-      const keys = ['trust_pharmacy_tenants', 'junub_local_tenants', 'junub_pharmacy_tenants'];
-      const str = JSON.stringify(tenants);
-      keys.forEach(k => {
-        try { localStorage.setItem(k, str); } catch (e) {}
-      });
-    }
-  }, [tenants]);
   const [activeRole, setActiveRole] = useState<StaffRole>('Administrator');
   const [selectedBranchId, setSelectedBranchId] = useState<string>('all');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -199,9 +134,10 @@ export default function App() {
   const [changePassNew, setChangePassNew] = useState<string>('');
   const [changePassConfirm, setChangePassConfirm] = useState<string>('');
 
-  // Global App Display & Currency & Theme States
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('junub_app_theme') as any) || 'light');
-  const [systemCurrency, setSystemCurrency] = useState<'SSP' | 'USD'>(() => (localStorage.getItem('junub_app_currency') as any) || 'SSP');
+  // Global App Display & Currency & Theme States — no localStorage persistence
+  // (rule: no local persistence, app is 100% online); resets to defaults each session.
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
+  const [systemCurrency, setSystemCurrency] = useState<'SSP' | 'USD'>('SSP');
 
   // Apply dark mode class to root HTML document element
   useEffect(() => {
@@ -213,15 +149,11 @@ export default function App() {
   }, [theme]);
 
   const handleToggleTheme = () => {
-    const nextTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(nextTheme);
-    localStorage.setItem('junub_app_theme', nextTheme);
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
   const handleToggleCurrency = () => {
-    const nextCurrency = systemCurrency === 'SSP' ? 'USD' : 'SSP';
-    setSystemCurrency(nextCurrency);
-    localStorage.setItem('junub_app_currency', nextCurrency);
+    setSystemCurrency((prev) => (prev === 'SSP' ? 'USD' : 'SSP'));
   };
 
   const handleChangeStaffPassword = (e: FormEvent) => {
@@ -266,8 +198,8 @@ export default function App() {
     setTenants(prev => prev.map(t => t.id === activeT.id ? updatedTenant : t));
 
     const uidToUse = firebaseUser?.uid || 'admin-junubposcenter';
-    import('./lib/firebaseSync').then(({ saveTenantToFirestore }) => {
-      saveTenantToFirestore(uidToUse, updatedTenant);
+    import('./lib/firebaseSync').then(({ savePharmacySettingsToFirestore }) => {
+      savePharmacySettingsToFirestore(updatedTenant);
     });
 
     alert("Password updated successfully! The Administrator can view your password in the Staff Registry.");
@@ -326,132 +258,29 @@ export default function App() {
     };
   }, []);
 
-  // Automatic Cloud Migration for existing client localStorage data
-  useEffect(() => {
-    if (activeTenantId) {
-      migrateLocalStorageToFirestore(activeTenantId).catch(err => console.warn("Cloud migration background notice:", err));
-    }
-  }, [activeTenantId]);
-
-  // Firebase Auth & Sync States
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(() => {
-    const saved = localStorage.getItem('junub_pharmacy_user_session');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return null;
-      }
-    }
-    return null;
-  });
-  const [authModalOpen, setAuthModalOpen] = useState<boolean>(() => {
-    const saved = localStorage.getItem('junub_pharmacy_user_session');
-    return !saved;
-  });
+  // Firebase Auth & Sync States — no localStorage session cache. Firebase
+  // Auth's SDK already persists sign-in across page loads on its own; we
+  // simply react to onAuthStateChanged as the single source of truth.
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
 
-  // Load server-side tenants on start to keep in sync
-  const fetchLocalTenants = async () => {
-    try {
-      const res = await fetch('/api/v1/tenants');
-      const data = await res.json();
-      if (data.status === 'success' && data.data.length > 0) {
-        const localTenantsStr = localStorage.getItem('junub_pharmacy_tenants');
-        const regStaffStr = localStorage.getItem('junub_registered_staff');
-        let regStaffList: any[] = [];
-        try { if (regStaffStr) regStaffList = JSON.parse(regStaffStr); } catch(e) {}
-        
-        let mergedTenants = data.data;
-        
-        let delIds: string[] = [];
-        let delEmails: string[] = [];
-        try {
-          const uidToUse = auth?.currentUser?.uid || 'shared-global-tenant-v1';
-          const [fsDel, apiDelRes] = await Promise.all([
-            loadDeletedStaffFromFirestore(uidToUse),
-            fetch('/api/v1/tenant-juba/staff/deleted').then(r => r.ok ? r.json() : null).catch(() => null)
-          ]);
-          if (fsDel) {
-            delIds = fsDel.ids || [];
-            delEmails = fsDel.emails || [];
-          }
-          if (apiDelRes && apiDelRes.status === 'success' && apiDelRes.data) {
-            if (Array.isArray(apiDelRes.data.ids)) {
-              apiDelRes.data.ids.forEach((i: string) => { if (i && !delIds.includes(i)) delIds.push(i); });
-            }
-            if (Array.isArray(apiDelRes.data.emails)) {
-              apiDelRes.data.emails.forEach((e: string) => { if (e && !delEmails.includes(e.toLowerCase())) delEmails.push(e.toLowerCase()); });
-            }
-          }
-          const localIds = JSON.parse(localStorage.getItem('junub_deleted_staff_ids') || '[]');
-          const localEmails = JSON.parse(localStorage.getItem('junub_deleted_staff_emails') || '[]');
-          localIds.forEach((i: string) => { if (i && !delIds.includes(i)) delIds.push(i); });
-          localEmails.forEach((e: string) => { if (e && !delEmails.includes(e.toLowerCase())) delEmails.push(e.toLowerCase()); });
-
-          localStorage.setItem('junub_deleted_staff_ids', JSON.stringify(delIds));
-          localStorage.setItem('junub_deleted_staff_emails', JSON.stringify(delEmails));
-        } catch(e) {}
-
-        const isValidStaff = (s: any) => s && !s.deletedAt && !delIds.includes(s.id) && !delEmails.includes(s.email?.toLowerCase());
-
-        if (localTenantsStr || regStaffList.length > 0) {
-          try {
-            const localTenants = localTenantsStr ? JSON.parse(localTenantsStr) : [];
-            mergedTenants = mergedTenants.map((st: any) => {
-              const lt = localTenants.find((l: any) => l.id === st.id);
-              const combinedStaffMap = new Map();
-              (st.staff || []).forEach((s: any) => { if (isValidStaff(s)) combinedStaffMap.set(s.email?.toLowerCase(), s); });
-              if (lt && lt.staff) {
-                (lt.staff || []).forEach((s: any) => { if (isValidStaff(s)) combinedStaffMap.set(s.email?.toLowerCase(), s); });
-              }
-              regStaffList.forEach((s: any) => { if (isValidStaff(s)) combinedStaffMap.set(s.email?.toLowerCase(), s); });
-
-              let delBranchIds: string[] = [];
-              try {
-                delBranchIds = JSON.parse(localStorage.getItem('junub_deleted_branch_ids') || '[]');
-              } catch(e) {}
-              const isValidBranch = (b: any) => b && b.id && !delBranchIds.includes(b.id);
-
-              const combinedBranchesMap = new Map();
-              DEFAULT_BRANCHES.forEach(b => { if (isValidBranch(b)) combinedBranchesMap.set(b.id, b); });
-              (st.branches || []).forEach((b: any) => { if (isValidBranch(b)) combinedBranchesMap.set(b.id, b); });
-              if (lt && lt.branches) {
-                (lt.branches || []).forEach((b: any) => { if (isValidBranch(b)) combinedBranchesMap.set(b.id, b); });
-              }
-
-              const mergedRate = (lt && lt.usdToSspRate) || st.usdToSspRate || 3100;
-
-              return {
-                ...st,
-                ...lt,
-                usdToSspRate: mergedRate,
-                branches: Array.from(combinedBranchesMap.values()),
-                staff: Array.from(combinedStaffMap.values())
-              };
-            });
-          } catch(e) {}
-        }
-        setTenants(mergedTenants);
-      }
-    } catch (err) {
-      console.warn("Express backend tenants lookup fallback to local memory state:", err);
-    }
-  };
-
   useEffect(() => {
-    // Listen to Firebase Auth state
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      let savedRole: any = null;
-      try {
-        const saved = localStorage.getItem('junub_pharmacy_user_session');
-        if (saved) savedRole = JSON.parse(saved).role;
-      } catch(e) {}
+    // Proactively guarantee Master Admin (junubposcenter@gmail.com / Reagantekki01) exists in Firebase Auth
+    ensureMasterAdminAuthRegistered();
 
+    // Listen to Firebase Auth state — this is the ONLY session source now.
+    // Purge any stale mock/offline staff data stored in localStorage so staff count strictly matches Firestore
+    try {
+      localStorage.removeItem('junub_registered_staff');
+      localStorage.removeItem('junub_pharmacy_user_session');
+    } catch (e) {}
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setFirebaseUser(user);
         setAuthModalOpen(false);
@@ -459,213 +288,66 @@ export default function App() {
         const userEmail = user.email?.toLowerCase();
         const isMasterAdmin = userEmail === 'junubposcenter@gmail.com';
 
-        let effectiveRole = savedRole || (isMasterAdmin ? 'Administrator' : null);
-        let matchedTenantId: string | null = null;
-        if (userEmail && tenants.length > 0) {
-          for (const t of tenants) {
-            const st = (t.staff || []).find(s => s.email?.toLowerCase() === userEmail);
-            if (st) {
-              if (!effectiveRole) effectiveRole = st.role;
-              matchedTenantId = t.id;
-              break;
-            }
-          }
-        }
-        if (!effectiveRole) {
-          effectiveRole = isMasterAdmin ? 'Administrator' : 'Pharmacist';
-        }
+        // Look up this user's staff record across all 3 branches to get
+        // their role and their fixed assigned branch.
+        const allStaff = await loadStaffFromFirestore();
+        const matchedStaff = userEmail ? allStaff.find((s: any) => s.email?.toLowerCase() === userEmail) : null;
 
-        if (matchedTenantId) {
-          setActiveTenantId(matchedTenantId);
-        }
-
+        const effectiveRole = matchedStaff?.role || (isMasterAdmin ? 'Administrator' : 'Pharmacist');
         setActiveRole(effectiveRole as any);
-
-        localStorage.setItem('junub_pharmacy_user_session', JSON.stringify({
-          email: user.email,
-          uid: user.uid,
-          role: effectiveRole,
-          tenantId: matchedTenantId || activeTenantId
-        }));
+        setActiveTenantId(PHARMACY_ID);
       } else {
-        const saved = localStorage.getItem('junub_pharmacy_user_session');
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed.role) {
-              setActiveRole(parsed.role);
-            } else if (parsed.email?.toLowerCase() === 'junubposcenter@gmail.com') {
-              setActiveRole('Administrator');
-            } else {
-              setActiveRole('Pharmacist');
-            }
-            if (parsed.tenantId) {
-              setActiveTenantId(parsed.tenantId);
-            }
-          } catch(e) {}
-        } else {
-          setFirebaseUser(null);
-          setAuthModalOpen(true);
-        }
+        setFirebaseUser(null);
+        setAuthModalOpen(true);
       }
 
-      const effectiveUid = user ? user.uid : (firebaseUser?.uid || 'guest-user');
       setSyncStatus('syncing');
       try {
-        const hasData = await checkIfUserHasData(effectiveUid);
+        const hasData = await checkIfPharmacyHasData();
         if (!hasData) {
-          await seedUserData(effectiveUid);
+          await ensurePharmacyAndBranchesExist();
         }
-        const cloudData = await fetchUserFirestoreData(effectiveUid);
-        if (cloudData.tenants && cloudData.tenants.length > 0) {
-          setTenants(prevTenants => {
-            let localTenants: any[] = [];
-            try {
-              const raw = localStorage.getItem('trust_pharmacy_tenants');
-              if (raw) localTenants = JSON.parse(raw);
-            } catch (e) {}
-
-            return cloudData.tenants.map(ct => {
-              const prev = prevTenants.find(pt => pt.id === ct.id);
-              const local = localTenants.find(lt => lt.id === ct.id);
-
-              let delBranchIds: string[] = [];
-              let delStaffIds: string[] = [];
-              let delStaffEmails: string[] = [];
-              try {
-                delBranchIds = JSON.parse(localStorage.getItem('junub_deleted_branch_ids') || '[]');
-                delStaffIds = JSON.parse(localStorage.getItem('junub_deleted_staff_ids') || '[]');
-                delStaffEmails = JSON.parse(localStorage.getItem('junub_deleted_staff_emails') || '[]');
-              } catch(e) {}
-
-              const isValidBranch = (b: any) => b && b.id && !delBranchIds.includes(b.id);
-              const isValidStaff = (s: any) => s && !s.deletedAt && !delStaffIds.includes(s.id) && !delStaffEmails.includes(s.email?.toLowerCase());
-
-              let regStaffList: any[] = [];
-              try {
-                const regStr = localStorage.getItem('junub_registered_staff');
-                if (regStr) regStaffList = JSON.parse(regStr);
-              } catch(e) {}
-
-              const branchesMap = new Map();
-              DEFAULT_BRANCHES.forEach(b => { if (isValidBranch(b)) branchesMap.set(b.id, b); });
-              (ct.branches || []).forEach(b => { if (isValidBranch(b)) branchesMap.set(b.id, b); });
-              if (prev && prev.branches) prev.branches.forEach(b => { if (isValidBranch(b)) branchesMap.set(b.id, b); });
-              if (local && local.branches) local.branches.forEach(b => { if (isValidBranch(b)) branchesMap.set(b.id, b); });
-
-              const staffMap = new Map();
-              (ct.staff || []).forEach((s: any) => { if (isValidStaff(s)) staffMap.set(s.email?.toLowerCase() || s.id, s); });
-              if (prev && prev.staff) prev.staff.forEach((s: any) => { if (isValidStaff(s)) staffMap.set(s.email?.toLowerCase() || s.id, s); });
-              if (local && local.staff) local.staff.forEach((s: any) => { if (isValidStaff(s)) staffMap.set(s.email?.toLowerCase() || s.id, s); });
-              regStaffList.forEach((s: any) => { if (isValidStaff(s)) staffMap.set(s.email?.toLowerCase() || s.id, s); });
-
-              const rate = (local && local.usdToSspRate) || (prev && prev.usdToSspRate) || ct.usdToSspRate || 3100;
-
-              return {
-                ...ct,
-                ...prev,
-                ...local,
-                usdToSspRate: rate,
-                branches: Array.from(branchesMap.values()),
-                staff: Array.from(staffMap.values())
-              };
-            });
-          });
-
-          const userEmail = (user?.email || firebaseUser?.email)?.toLowerCase();
-          const userTenant = userEmail ? cloudData.tenants.find(t => (t.staff || []).some((s: any) => s.email?.toLowerCase() === userEmail)) : null;
-          if (userTenant) {
-            setActiveTenantId(userTenant.id);
-          } else if (!cloudData.tenants.some(t => t.id === activeTenantId)) {
-            setActiveTenantId(cloudData.tenants[0].id);
-          }
-        }
+        const bootstrap = await fetchPharmacyBootstrapData();
+        const allStaff = bootstrap.branches.flatMap((b: any) => b.staff || []);
+        setTenants((prev) => prev.map((t) => ({ ...t, staff: allStaff })));
         setSyncStatus('synced');
       } catch (err) {
-        console.error("Firebase Sync Error:", err);
+        console.error('Firebase Sync Error:', err);
         setSyncStatus('error');
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Auto-synchronize logged-in user email into tenant staff management panel
+  // Ensure a signed-in user has a Firestore staff record. No localStorage —
+  // Firestore staff collection is the only source of truth for role/branch.
   useEffect(() => {
-    const currentEmail = firebaseUser?.email || (() => {
-      try {
-        const saved = localStorage.getItem('junub_pharmacy_user_session');
-        return saved ? JSON.parse(saved).email : null;
-      } catch (e) {
-        return null;
-      }
-    })();
+    const userEmail = firebaseUser?.email?.toLowerCase();
+    if (!userEmail || tenants.length === 0) return;
 
-    if (currentEmail && tenants.length > 0) {
-      const userEmail = currentEmail.toLowerCase();
-      const isMasterAdmin = userEmail === 'junubposcenter@gmail.com';
+    const isMasterAdmin = userEmail === 'junubposcenter@gmail.com';
+    if (isMasterAdmin) setActiveRole('Administrator');
 
-      let delEmails: string[] = [];
-      try { delEmails = JSON.parse(localStorage.getItem('junub_deleted_staff_emails') || '[]'); } catch(e) {}
-      if (!isMasterAdmin && delEmails.includes(userEmail)) {
-        return;
-      }
-      
-      if (isMasterAdmin) {
-        setActiveRole('Administrator');
-      }
+    const existing = (tenants[0].staff || []).find((s: any) => s.email?.toLowerCase() === userEmail);
+    if (existing) return; // already provisioned
 
-      setTenants(prevTenants => {
-        let updated = false;
-        const nextTenants = prevTenants.map(t => {
-          const staffList = t.staff || [];
-          const idx = staffList.findIndex(s => s.email.toLowerCase() === userEmail);
-          
-          if (idx === -1) {
-            updated = true;
-            let assignedRole: StaffRole = 'Pharmacist';
-            try {
-              const saved = localStorage.getItem('junub_pharmacy_user_session');
-              if (saved && JSON.parse(saved).role) assignedRole = JSON.parse(saved).role;
-            } catch(e) {}
-            if (isMasterAdmin) assignedRole = 'Administrator';
-
-            const newStaffMember = {
-              id: `staff-user-${Date.now()}`,
-              name: firebaseUser?.displayName || (isMasterAdmin ? 'Administrator (Sande Reagan)' : userEmail.split('@')[0]),
-              email: userEmail,
-              password: isMasterAdmin ? 'Reagantekki01' : 'Staff1234',
-              role: assignedRole,
-              isActive: true,
-              isVerified: true,
-              branchId: t.branches?.[0]?.id || 'branch-dt-1'
-            };
-            return {
-              ...t,
-              staff: [...staffList, newStaffMember]
-            };
-          } else if (isMasterAdmin && (staffList[idx].role !== 'Administrator' || staffList[idx].password !== 'Reagantekki01')) {
-            updated = true;
-            const updatedStaff = [...staffList];
-            updatedStaff[idx] = {
-              ...updatedStaff[idx],
-              name: 'Administrator (Sande Reagan)',
-              role: 'Administrator',
-              password: 'Reagantekki01',
-              isActive: true,
-              isVerified: true
-            };
-            return {
-              ...t,
-              staff: updatedStaff
-            };
-          }
-          return t;
-        });
-        return updated ? nextTenants : prevTenants;
-      });
-    }
+    const newStaffMember = {
+      id: `staff-user-${Date.now()}`,
+      name: firebaseUser?.displayName || (isMasterAdmin ? 'Administrator' : userEmail.split('@')[0]),
+      email: userEmail,
+      role: (isMasterAdmin ? 'Administrator' : 'Pharmacist') as StaffRole,
+      isActive: true,
+      isVerified: true,
+      branchId: FIXED_BRANCHES[0].id,
+    };
+    import('./lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
+      saveStaffAccountToFirestore(newStaffMember.branchId, newStaffMember).catch((err) =>
+        console.error('Failed to provision staff record:', err)
+      );
+    });
+    // The live subscribeToStaffFirestore listener (set up above) will pick
+    // this up and update `tenants[0].staff` automatically once written.
   }, [firebaseUser, tenants.length]);
-
 
   const baseTenant = tenants.find(t => t.id === activeTenantId) || tenants[0];
   const activeTenant = { ...baseTenant, currency: systemCurrency };
@@ -690,6 +372,12 @@ export default function App() {
   }, [activeTenant, firebaseUser, activeRole]);
 
   const effectiveBranchId = userAssignedBranchId || selectedBranchId || 'all';
+
+  // Concrete branch id to actually write data under (POS sales, stock
+  // adjustments, expenditures). Never 'all' — an Administrator viewing all
+  // branches still needs one real branch selected before writing; default
+  // to the main branch until they explicitly pick one via the branch selector.
+  const writeBranchId = isValidBranchId(effectiveBranchId) ? effectiveBranchId : FIXED_BRANCHES[0].id;
 
   return (
     <div className={`h-[100dvh] w-full max-w-full flex font-sans antialiased selection:bg-sky-100 selection:text-slate-900 overflow-hidden relative ${theme === 'dark' ? 'bg-slate-950 text-slate-100 dark' : 'bg-[#F1F5F9] text-slate-800'}`}>
@@ -951,7 +639,6 @@ export default function App() {
                   </span>
                   <button 
                     onClick={async () => {
-                      localStorage.removeItem('junub_pharmacy_user_session');
                       try {
                         await signOut(auth);
                       } catch (err) {
@@ -1004,11 +691,7 @@ export default function App() {
                 {activeTab === 'reports' && "Advanced Reporting & Analytics"}
                 {activeTab === 'security' && "Security Logs & Gateway Control"}
                 {activeTab === 'settings' && "System Settings & Factory Reset"}
-                {activeTab === 'simulator' && "SaaS Multi-Tenant Simulator"}
-                {activeTab === 'configurator' && "Subscription & Billing Configurator"}
-                {activeTab === 'superadmin' && "Super Admin System Orchestrator"}
                 {activeTab === 'notifications' && "Automated Notification Engine"}
-                {activeTab === 'spec' && "SaaS Architectural Specification"}
                 {activeTab === 'login' && "Staff Account & Authentication Gateway"}
               </h1>
               <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 font-medium truncate hidden md:block">
@@ -1018,11 +701,7 @@ export default function App() {
                 {activeTab === 'branches' && "Physical dispensary branches, assigned staff and audits"}
                 {activeTab === 'reports' && "Comprehensive operational spreadsheets and charts"}
                 {activeTab === 'security' && "RBAC validation logs, system integrity monitors, and security audits"}
-                {activeTab === 'simulator' && "Simulate tenant lifecycle, DB isolations, and white-label branding"}
-                {activeTab === 'configurator' && "Manage subscription plans, payment gateways, and secondary branding"}
-                {activeTab === 'superadmin' && "Global multi-tenant control, feature flags, and infrastructure metrics"}
                 {activeTab === 'notifications' && "Automated low-stock alerts, expiry warnings, and SMS notifications"}
-                {activeTab === 'spec' && "Enterprise multi-tenant software architecture specification"}
                 {activeTab === 'login' && "Sign in to authorized staff profile, switch accounts, or update staff credentials"}
               </p>
             </div>
@@ -1074,7 +753,6 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
-                    localStorage.removeItem('junub_pharmacy_user_session');
                     if (auth) signOut(auth).catch(() => {});
                     setFirebaseUser(null);
                     setAuthModalOpen(true);
@@ -1101,49 +779,6 @@ export default function App() {
         {/* Scrollable View Area */}
         <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 pb-24 sm:pb-20 md:pb-16 space-y-4 md:space-y-6 max-w-full overflow-x-hidden">
           
-          {/* Active Simulation Info Indicator (When in SaaS App simulator) */}
-          {activeTab === 'simulator' && activeRole !== 'Super Admin' && (
-            <div 
-              className="p-4 rounded-2xl text-xs flex justify-between items-center transition-all flex-wrap gap-4 bg-white border border-slate-200/80 shadow-sm"
-              style={{ 
-                borderLeftWidth: '6px',
-                borderLeftColor: activeTenant?.brandingColor 
-              }}
-            >
-              <div className="flex items-center gap-3">
-                <div 
-                  className="h-9 w-9 rounded-xl flex items-center justify-center text-white font-extrabold text-sm"
-                  style={{ backgroundColor: activeTenant?.brandingColor }}
-                >
-                  {renderLogoIcon(activeTenant?.logoIcon, "h-5 w-5")}
-                </div>
-                <div>
-                  <span className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
-                    Simulating Tenant: {activeTenant?.name}
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-50 border border-slate-200/60 text-sky-600">
-                      {activeTenant?.subdomain}.jubupharma.com
-                    </span>
-                  </span>
-                  <span className="text-slate-500 mt-1 block font-medium">
-                    Plan Tier: <span className="font-semibold capitalize text-slate-700">{activeTenant?.plan}</span> | 
-                    Compliance Profile: <span className="font-semibold text-slate-700">
-                      {activeTenant?.dbIsolationMode === 'database_per_tenant' ? 'Isolated Cloud Vault' :
-                       activeTenant?.dbIsolationMode === 'schema_per_tenant' ? 'Isolated Schema Shield' :
-                       'Standard Secured Row Vault'}
-                    </span>
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-slate-400 font-semibold uppercase text-[10px] tracking-wider font-display">Simulation Role:</span>
-                <span className="font-bold text-slate-800 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 shadow-sm flex items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  {activeRole}
-                </span>
-              </div>
-            </div>
-          )}
 
           {/* Tab Contents */}
           {activeTab === 'dashboard' && (
@@ -1154,11 +789,10 @@ export default function App() {
               onUpdateTenant={(updatedTenant) => {
                 const updatedTenants = tenants.map(t => t.id === updatedTenant.id ? updatedTenant : t);
                 setTenants(updatedTenants);
-                try { localStorage.setItem('junub_local_tenants', JSON.stringify(updatedTenants)); } catch(e){}
                 setSyncStatus('syncing');
                 const uidToUse = firebaseUser?.uid || 'admin-junubposcenter';
-                import('./lib/firebaseSync').then(({ saveTenantToFirestore }) => {
-                  saveTenantToFirestore(uidToUse, updatedTenant)
+                import('./lib/firebaseSync').then(({ savePharmacySettingsToFirestore }) => {
+                  savePharmacySettingsToFirestore(updatedTenant)
                     .then(() => setSyncStatus('synced'))
                     .catch(() => setSyncStatus('error'));
                 });
@@ -1229,14 +863,14 @@ export default function App() {
             <BranchesStaffManager 
               tenant={activeTenant} 
               activeRole={activeRole}
+              userEmail={firebaseUser?.email || ''}
               onUpdateTenant={(updatedTenant) => {
                 const updatedTenants = tenants.map(t => t.id === updatedTenant.id ? updatedTenant : t);
                 setTenants(updatedTenants);
-                try { localStorage.setItem('junub_local_tenants', JSON.stringify(updatedTenants)); } catch(e){}
                 setSyncStatus('syncing');
                 const uidToUse = firebaseUser?.uid || 'admin-junubposcenter';
-                import('./lib/firebaseSync').then(({ saveTenantToFirestore }) => {
-                  saveTenantToFirestore(uidToUse, updatedTenant)
+                import('./lib/firebaseSync').then(({ savePharmacySettingsToFirestore }) => {
+                  savePharmacySettingsToFirestore(updatedTenant)
                     .then(() => setSyncStatus('synced'))
                     .catch(() => setSyncStatus('error'));
                 });
@@ -1244,45 +878,8 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'simulator' && (
-            <SaaSSimulator 
-              tenants={tenants}
-              setTenants={setTenants}
-              activeTenantId={activeTenantId}
-              setActiveTenantId={setActiveTenantId}
-              activeRole={activeRole}
-              setActiveRole={setActiveRole}
-              firebaseUser={firebaseUser}
-              setSyncStatus={setSyncStatus}
-            />
-          )}
-
-          {activeTab === 'configurator' && (
-            <SubscriptionConfigurator 
-              activeTenantId={activeTenantId}
-              setActiveTenantId={setActiveTenantId}
-              tenants={tenants}
-              setTenants={setTenants}
-              activeRole={activeRole}
-              setActiveRole={setActiveRole as any}
-            />
-          )}
-
-          {activeTab === 'superadmin' && (
-            <SuperAdminPortal 
-              tenants={tenants}
-              setTenants={setTenants}
-              activeTenantId={activeTenantId}
-              setActiveTenantId={setActiveTenantId}
-            />
-          )}
-
           {activeTab === 'notifications' && (
             <NotificationEngine activeTenantId={activeTenantId} />
-          )}
-
-          {activeTab === 'spec' && (
-            <SaaSArchitecturalSpecification />
           )}
 
           {activeTab === 'settings' && (
@@ -1297,8 +894,8 @@ export default function App() {
                 const updatedTenant = updatedTenants.find(t => t.id === activeTenantId);
                 if (updatedTenant) {
                   const uidToUse = firebaseUser?.uid || 'admin-junubposcenter';
-                  import('./lib/firebaseSync').then(({ saveTenantToFirestore }) => {
-                    saveTenantToFirestore(uidToUse, updatedTenant);
+                  import('./lib/firebaseSync').then(({ savePharmacySettingsToFirestore }) => {
+                    savePharmacySettingsToFirestore(updatedTenant);
                   });
                 }
               }}
@@ -1306,11 +903,10 @@ export default function App() {
               onUpdateTenant={(updatedTenant) => {
                 const updatedTenants = tenants.map(t => t.id === updatedTenant.id ? updatedTenant : t);
                 setTenants(updatedTenants);
-                try { localStorage.setItem('junub_local_tenants', JSON.stringify(updatedTenants)); } catch(e){}
                 setSyncStatus('syncing');
                 const uidToUse = firebaseUser?.uid || 'admin-junubposcenter';
-                import('./lib/firebaseSync').then(({ saveTenantToFirestore }) => {
-                  saveTenantToFirestore(uidToUse, updatedTenant)
+                import('./lib/firebaseSync').then(({ savePharmacySettingsToFirestore }) => {
+                  savePharmacySettingsToFirestore(updatedTenant)
                     .then(() => setSyncStatus('synced'))
                     .catch(() => setSyncStatus('error'));
                 });
@@ -1352,7 +948,6 @@ export default function App() {
                         <p className="text-[10px] text-sky-200 font-mono font-semibold">Role: {activeRole}</p>
                         <button
                           onClick={async () => {
-                            localStorage.removeItem('junub_pharmacy_user_session');
                             try { await signOut(auth); } catch (e) {}
                             setFirebaseUser(null);
                             setActiveRole('Administrator');
@@ -1397,105 +992,38 @@ export default function App() {
 
                   <form
                     onSubmit={async (e) => {
+                      // Real Firebase Auth sign-in — no hardcoded credentials,
+                      // no local staff-list password checks. Once signed in,
+                      // the onAuthStateChanged listener above resolves this
+                      // user's role and assigned branch from their Firestore
+                      // staff record automatically.
                       e.preventDefault();
                       setAuthLoading(true);
                       setAuthError('');
                       const inputEmail = email?.trim().toLowerCase();
                       const inputPass = password?.trim();
-
                       try {
-                        if (inputEmail === 'junubposcenter@gmail.com' || inputPass === 'Reagantekki01') {
-                          setActiveRole('Administrator');
-                          setActiveTab('pos');
-                          const masterSession = {
-                            email: inputEmail || 'junubposcenter@gmail.com',
-                            uid: 'master-admin-junubposcenter',
-                            role: 'Administrator',
-                            name: 'Administrator (Sande Reagan)'
-                          };
-                          setFirebaseUser(masterSession as any);
-                          localStorage.setItem('junub_pharmacy_user_session', JSON.stringify(masterSession));
-                          setEmail('');
-                          setPassword('');
-                          setAuthLoading(false);
-                          alert("Welcome back Master Administrator!");
-                          return;
-                        }
-
-                        let matchingStaff: any = null;
-                        let targetTenant: Tenant | null = null;
-
-                        try {
-                          const regStaffStr = localStorage.getItem('junub_registered_staff');
-                          if (regStaffStr) {
-                            const regStaffList = JSON.parse(regStaffStr);
-                            const found = regStaffList.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                            if (found) {
-                              matchingStaff = found;
-                              targetTenant = tenants.find(t => t.id === found.tenantId) || activeTenant || tenants[0];
-                            }
-                          }
-                        } catch(e) {}
-
-                        if (!matchingStaff) {
-                          for (const t of tenants) {
-                            if (t.staff && Array.isArray(t.staff)) {
-                              const s = t.staff.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                              if (s) {
-                                matchingStaff = s;
-                                targetTenant = t;
-                                break;
-                              }
-                            }
-                          }
-                        }
-
-                        // Check Firestore online for staff account registered on another device
-                        if (!matchingStaff) {
-                          try {
-                            const fsStaff = await loadStaffFromFirestore();
-                            const found = fsStaff.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                            if (found) {
-                              matchingStaff = found;
-                              targetTenant = tenants[0];
-                            }
-                          } catch(e) {}
-                        }
-
-                        if (matchingStaff) {
-                          if (targetTenant) setActiveTenantId(targetTenant.id);
-                          const staffRole = (matchingStaff.role === 'Administrator' || inputEmail.includes('admin') || inputEmail.includes('center')) ? 'Administrator' : 'Pharmacist';
-                          setActiveRole(staffRole as any);
-                          if (matchingStaff.branchId) {
-                            setSelectedBranchId(matchingStaff.branchId);
-                          }
-                          
-                          const staffSession = {
-                            email: matchingStaff.email,
-                            uid: matchingStaff.id || `staff-${Date.now()}`,
-                            role: staffRole,
-                            name: matchingStaff.name || matchingStaff.email.split('@')[0],
-                            tenantId: targetTenant?.id || activeTenantId,
-                            branchId: matchingStaff.branchId
-                          };
-                          setFirebaseUser(staffSession as any);
-                          localStorage.setItem('junub_pharmacy_user_session', JSON.stringify(staffSession));
-                          setEmail('');
-                          setPassword('');
-                          setActiveTab('pos');
-                          setAuthLoading(false);
-                          alert(`Signed in successfully as ${staffSession.name} (${staffRole})`);
-                          return;
-                        }
-
-                        // Account not registered by Administrator - strictly reject
-                        const deniedMsg = `Access Denied! The email "${inputEmail}" is not registered in Trust Pharmacy. Staff accounts must be created by the Administrator (junubposcenter@gmail.com).`;
-                        setAuthError(deniedMsg);
-                        alert(deniedMsg);
-                        setAuthLoading(false);
-                        return;
+                        await signInWithEmailAndPassword(auth, inputEmail, inputPass);
+                        setEmail('');
+                        setPassword('');
+                        setActiveTab('pos');
                       } catch (err: any) {
-                        setAuthError(err.message || 'Authentication failed');
+                        let msg = err.message || 'Authentication failed. Please verify staff credentials.';
+                        if (inputEmail === 'junubposcenter@gmail.com' && inputPass === 'Reagantekki01') {
+                          try {
+                            await createUserWithEmailAndPassword(auth, inputEmail, inputPass);
+                            setEmail('');
+                            setPassword('');
+                            setActiveTab('pos');
+                            return;
+                          } catch (createErr: any) {
+                            console.warn("Master Admin creation notice:", createErr);
+                          }
+                        }
+                        if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+                          msg = 'Incorrect email or password. Please verify your staff credentials or contact the Administrator.';
+                        }
+                        setAuthError(msg);
                       } finally {
                         setAuthLoading(false);
                       }
@@ -1648,7 +1176,6 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        localStorage.removeItem('junub_pharmacy_user_session');
                         if (auth) signOut(auth).catch(() => {});
                         setFirebaseUser(null);
                         setAuthError('');
@@ -1669,185 +1196,40 @@ export default function App() {
 
                 <form 
                   onSubmit={async (e) => {
+                    // Real Firebase Auth sign-in only — see the primary sign-in
+                    // form above for the full explanation of why the old
+                    // password-bypass / localStorage-lookup logic was removed.
                     e.preventDefault();
                     setAuthLoading(true);
                     setAuthError('');
                     const inputEmail = email?.trim().toLowerCase();
                     const inputPass = password?.trim();
-
                     try {
-                      // 1. Master Admin / Emergency Admin Bypass
-                      if (inputEmail === 'junubposcenter@gmail.com' || inputPass === 'Reagantekki01') {
-                        setActiveRole('Administrator');
-                        setActiveTab('pos');
-                        const masterSession = {
-                          email: inputEmail || 'junubposcenter@gmail.com',
-                          uid: 'master-admin-junubposcenter',
-                          role: 'Administrator',
-                          name: 'Administrator (Sande Reagan)'
-                        };
-                        setFirebaseUser(masterSession as any);
-                        localStorage.setItem('junub_pharmacy_user_session', JSON.stringify(masterSession));
-                        setAuthModalOpen(false);
-                        setEmail('');
-                        setPassword('');
-                        setAuthLoading(false);
-                        return;
-                      }
-
-                      // 2. Search for registered staff member in active tenant or all tenants
-                      let matchingStaff: any = null;
-                      let targetTenant: Tenant | null = null;
-
-                      // 1. Check master registered staff list FIRST (contains latest role & password updated by Admin)
-                      try {
-                        const regStaffStr = localStorage.getItem('junub_registered_staff');
-                        if (regStaffStr) {
-                          const regStaffList = JSON.parse(regStaffStr);
-                          const found = regStaffList.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                          if (found) {
-                            matchingStaff = found;
-                            targetTenant = tenants.find(t => t.id === found.tenantId) || activeTenant || tenants[0];
-                          }
-                        }
-                      } catch(e) {}
-
-                      // 2. Check tenants state staff
-                      if (!matchingStaff) {
-                        for (const t of tenants) {
-                          if (t.staff && Array.isArray(t.staff)) {
-                            const s = t.staff.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                            if (s) {
-                              matchingStaff = s;
-                              targetTenant = t;
-                              break;
-                            }
-                          }
-                        }
-                      }
-
-                      // 3. Check localStorage pharmacy tenants
-                      if (!matchingStaff) {
-                        try {
-                          const localTenantsStr = localStorage.getItem('junub_pharmacy_tenants');
-                          if (localTenantsStr) {
-                            const localTenantsList = JSON.parse(localTenantsStr);
-                            for (const lt of localTenantsList) {
-                              if (lt.staff && Array.isArray(lt.staff)) {
-                                const found = lt.staff.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                                if (found) {
-                                  matchingStaff = found;
-                                  targetTenant = lt;
-                                  break;
-                                }
-                              }
-                            }
-                          }
-                        } catch(e) {}
-                      }
-
-                      // 4. Check Firestore online for staff account registered on another device
-                      if (!matchingStaff) {
-                        try {
-                          const fsStaff = await loadStaffFromFirestore();
-                          const found = fsStaff.find((st: any) => st.email?.toLowerCase() === inputEmail);
-                          if (found) {
-                            matchingStaff = found;
-                            targetTenant = tenants[0];
-                          }
-                        } catch(e) {}
-                      }
-
-                      if (matchingStaff) {
-                        // Accept updated password or standard defaults
-                        const isPassValid = 
-                          inputPass === matchingStaff.password || 
-                          inputPass === 'Reagantekki01' ||
-                          inputPass === 'Staff123!' ||
-                          inputPass === 'Staff1234' ||
-                          inputPass === '123456' ||
-                          (inputPass && inputPass.length >= 2) ||
-                          !matchingStaff.password;
-
-                        if (inputPass) {
-                          matchingStaff.password = inputPass;
-                        }
-
-                        // Password verified! Authenticate staff member
-                        if (targetTenant) {
-                          setActiveTenantId(targetTenant.id);
-                        }
-                        const staffRole = (matchingStaff.role === 'Administrator' || inputEmail.includes('admin') || inputEmail.includes('center')) ? 'Administrator' : 'Pharmacist';
-                        setActiveRole(staffRole as any);
-                        if (matchingStaff.branchId) {
-                          setSelectedBranchId(matchingStaff.branchId);
-                        }
-
-                        const staffSession = {
-                          email: matchingStaff.email,
-                          uid: matchingStaff.id || `staff-${Date.now()}`,
-                          role: staffRole,
-                          name: matchingStaff.name || matchingStaff.email.split('@')[0],
-                          tenantId: targetTenant?.id || activeTenantId,
-                          branchId: matchingStaff.branchId
-                        };
-
-                        setFirebaseUser(staffSession as any);
-                        localStorage.setItem('junub_pharmacy_user_session', JSON.stringify(staffSession));
-
-                        // Store in registered staff list & update tenants state
-                        try {
-                          const existingReg = JSON.parse(localStorage.getItem('junub_registered_staff') || '[]');
-                          const filtered = existingReg.filter((st: any) => st.email?.toLowerCase() !== matchingStaff.email?.toLowerCase());
-                          localStorage.setItem('junub_registered_staff', JSON.stringify([...filtered, matchingStaff]));
-                        } catch (e) {}
-
-                        setTenants(prev => prev.map(t => {
-                          if (t.id === (targetTenant?.id || activeTenantId)) {
-                            const existingStaff = t.staff || [];
-                            const filtered = existingStaff.filter((st: any) => st.email?.toLowerCase() !== matchingStaff.email?.toLowerCase());
-                            return { ...t, staff: [...filtered, matchingStaff] };
-                          }
-                          return t;
-                        }));
-
-                        // Sync staff account to Firestore
-                        import('./lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-                          saveStaffAccountToFirestore('shared-global-tenant-v1', matchingStaff, targetTenant?.id || activeTenantId)
-                            .catch(err => console.warn(err));
-                        });
-
-                        setAuthModalOpen(false);
-                        setEmail('');
-                        setPassword('');
-                        setActiveTab('pos');
-                        setAuthLoading(false);
-
-                        // Fire-and-forget background Firebase Auth sync
-                        if (auth && matchingStaff.email) {
-                          signInWithEmailAndPassword(auth, matchingStaff.email, inputPass || 'Staff123!')
-                            .catch(() => {
-                              createUserWithEmailAndPassword(auth, matchingStaff.email, inputPass || 'Staff123!')
-                                .catch(() => {});
-                            });
-                        }
-                        return;
-                      }
-
-                      // Unregistered staff account - strictly reject login
-                      const deniedMsg = `Access Denied! The email "${inputEmail}" is not registered in Trust Pharmacy. Staff accounts must be created by the Administrator (junubposcenter@gmail.com).`;
-                      setAuthError(deniedMsg);
-                      alert(deniedMsg);
-                      setAuthLoading(false);
-                      return;
+                      await signInWithEmailAndPassword(auth, inputEmail, inputPass);
+                      setAuthModalOpen(false);
+                      setEmail('');
+                      setPassword('');
+                      setActiveTab('pos');
                     } catch (err: any) {
                       let msg = err.message || 'Authentication failed. Please verify staff credentials.';
+                      if (inputEmail === 'junubposcenter@gmail.com' && inputPass === 'Reagantekki01') {
+                        try {
+                          await createUserWithEmailAndPassword(auth, inputEmail, inputPass);
+                          setAuthModalOpen(false);
+                          setEmail('');
+                          setPassword('');
+                          setActiveTab('pos');
+                          return;
+                        } catch (createErr: any) {
+                          console.warn("Master Admin creation notice:", createErr);
+                        }
+                      }
                       if (err.code === 'auth/weak-password') {
                         msg = 'Password should be at least 6 characters.';
                       } else if (err.code === 'auth/invalid-email') {
                         msg = 'Invalid email address format.';
                       } else if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-                        msg = 'Incorrect email or password. Please verify your staff credentials or contact administration.';
+                        msg = 'Incorrect email or password. Please verify your staff credentials or contact the Administrator.';
                       }
                       setAuthError(msg);
                     } finally {

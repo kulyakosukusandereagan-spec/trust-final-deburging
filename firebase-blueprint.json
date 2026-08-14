@@ -1,107 +1,132 @@
 {
   "entities": {
-    "tenants": {
-      "title": "Tenants",
-      "description": "Pharmacy organizations and branches",
+    "pharmacy": {
+      "title": "Pharmacy",
+      "description": "Single pharmacy root tenant settings and metadata",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
         "id": { "type": "string" },
         "name": { "type": "string" },
-        "subdomain": { "type": "string" },
-        "status": { "type": "string" },
-        "plan": { "type": "string" }
+        "maxBranches": { "type": "number" },
+        "updatedAt": { "type": "string" }
       },
-      "required": ["userId", "name"]
+      "required": ["id", "name"]
+    },
+    "branches": {
+      "title": "Branches",
+      "description": "Pharmacy branch outlets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "isMain": { "type": "boolean" }
+      },
+      "required": ["id", "name"]
     },
     "drugs": {
       "title": "Drugs",
       "description": "Pharmacy drug inventory items",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
-        "tenantId": { "type": "string" },
         "id": { "type": "string" },
         "name": { "type": "string" },
         "price": { "type": "number" },
         "stock": { "type": "number" }
       },
-      "required": ["userId", "tenantId", "name"]
+      "required": ["id", "name"]
     },
     "prescriptions": {
       "title": "Prescriptions",
       "description": "Doctor prescriptions and clinical requests",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
-        "tenantId": { "type": "string" },
         "id": { "type": "string" },
         "patientName": { "type": "string" },
         "drugName": { "type": "string" }
       },
-      "required": ["userId", "tenantId"]
+      "required": ["id"]
     },
     "transactions": {
       "title": "Transactions",
       "description": "POS checkout sales transactions and receipts",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
-        "tenantId": { "type": "string" },
         "id": { "type": "string" },
         "invoiceNumber": { "type": "string" },
         "total": { "type": "number" }
       },
-      "required": ["userId", "tenantId"]
+      "required": ["id"]
     },
     "expenditures": {
       "title": "Expenditures",
       "description": "Pharmacy operating expenses and overhead costs",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
         "id": { "type": "string" },
         "amount": { "type": "number" },
         "category": { "type": "string" }
       },
-      "required": ["userId"]
+      "required": ["id"]
     },
     "batches": {
       "title": "Batches",
       "description": "Medicine lot batches and expiry trackings",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
         "id": { "type": "string" },
         "batchNumber": { "type": "string" }
       },
-      "required": ["userId"]
-    },
-    "customers": {
-      "title": "Customers",
-      "description": "Registered patients and institutional clients",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "id": { "type": "string" },
-        "name": { "type": "string" }
-      },
-      "required": ["userId"]
+      "required": ["id"]
     },
     "staff": {
       "title": "Staff Accounts",
       "description": "Registered staff members and system user accounts",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
         "id": { "type": "string" },
         "name": { "type": "string" },
         "email": { "type": "string" },
-        "role": { "type": "string" },
-        "password": { "type": "string" }
+        "role": { "type": "string" }
       },
-      "required": ["userId", "email"]
+      "required": ["id", "email"]
+    }
+  },
+  "firestore": {
+    "/pharmacy/{pharmacyId}": {
+      "schema": "pharmacy",
+      "description": "Single-tenant pharmacy document"
+    },
+    "/pharmacy/{pharmacyId}/users/{userId}": {
+      "schema": "staff",
+      "description": "User profile mappings"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}": {
+      "schema": "branches",
+      "description": "Pharmacy branch document"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/products/{productId}": {
+      "schema": "drugs",
+      "description": "Drug catalog products"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/sales/{saleId}": {
+      "schema": "transactions",
+      "description": "Sales transactions"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/staff/{staffId}": {
+      "schema": "staff",
+      "description": "Staff member accounts"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/batches/{batchId}": {
+      "schema": "batches",
+      "description": "Inventory batches"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/expenditures/{expenditureId}": {
+      "schema": "expenditures",
+      "description": "Operating expenditures"
+    },
+    "/pharmacy/{pharmacyId}/branches/{branchId}/prescriptions/{rxId}": {
+      "schema": "prescriptions",
+      "description": "Clinical prescriptions"
     }
   }
 }
-

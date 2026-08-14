@@ -20,7 +20,7 @@ interface POSBillingProps {
   patients: Patient[];
   sales: SaleTransaction[];
   onCompleteSale: (sale: SaleTransaction) => void;
-  onUpdatePrescriptionStatus: (rxId: string, newStatus: any) => void;
+  onUpdatePrescriptionStatus: (rxId: string, newStatus: any, notes?: string) => void;
 }
 
 export const POSBilling: React.FC<POSBillingProps> = ({

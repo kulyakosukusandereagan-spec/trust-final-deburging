@@ -401,221 +401,24 @@ export default function PharmacyPOS({
   const [aiForecast, setAiForecast] = useState<any | null>(null);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
 
-  // Load static data or mock APIs
+  // Live Firestore subscriptions ARE the data layer now — no localStorage
+  // cache, no offline queue, no legacy REST API fallbacks. The app requires
+  // internet; if the branch's data can't be reached, the UI simply shows
+  // empty/loading rather than falling back to stale local data.
   useEffect(() => {
-    loadBatchesAndSales();
-    // Load offline sync queue from local storage
-    const storedQueue = localStorage.getItem(`jubu_offline_queue_${activeTenantId}`);
-    if (storedQueue) {
-      setSyncQueue(JSON.parse(storedQueue));
-    }
-
-    // Subscribe to real-time Firebase Firestore batch synchronization
+    setLoading(true);
     const unsubscribeFs = subscribeToBatchesFirestore(activeTenantId, (fsBatches) => {
       setBatches((fsBatches || []) as DrugBatch[]);
+      setLoading(false);
     });
-
-    // Subscribe to real-time Firebase Firestore transactions across branches
     const unsubscribeTx = subscribeToTransactionsFirestore(activeTenantId, (fsTransactions) => {
       setRecentTransactions((fsTransactions || []) as any[]);
     });
-
-    const handleUpdate = () => {
-      const cachedInvStr = localStorage.getItem(`junub_inventory_batches_${activeTenantId}`);
-      if (cachedInvStr) {
-        try {
-          const parsed = JSON.parse(cachedInvStr);
-          if (Array.isArray(parsed) && parsed.length >= 0) {
-            setBatches(parsed);
-          }
-        } catch(e) {}
-      }
-    };
-    window.addEventListener('junub_inventory_updated', handleUpdate);
-    window.addEventListener('junub_reports_cleared', handleUpdate);
-    window.addEventListener('junub_transaction_added', handleUpdate);
-    window.addEventListener('junub_system_reset', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
     return () => {
       unsubscribeFs();
       unsubscribeTx();
-      window.removeEventListener('junub_inventory_updated', handleUpdate);
-      window.removeEventListener('junub_reports_cleared', handleUpdate);
-      window.removeEventListener('junub_transaction_added', handleUpdate);
-      window.removeEventListener('junub_system_reset', handleUpdate);
-      window.removeEventListener('storage', handleUpdate);
     };
   }, [activeTenantId]);
-
-  const loadBatchesAndSales = async () => {
-    // Phase 1: FAST INSTANT LOCAL RENDER (0ms wait time)
-    const isReset = localStorage.getItem('trust_pharmacy_factory_reset') === 'true';
-    let isCleared = localStorage.getItem(`junub_inventory_cleared_${activeTenantId}`) === 'true';
-    const deletedStr = localStorage.getItem(`junub_deleted_batches_${activeTenantId}`) || '[]';
-    let deletedIds: string[] = [];
-    try { deletedIds = JSON.parse(deletedStr); } catch(e) {}
-
-    const cachedInvStr = localStorage.getItem(`junub_inventory_batches_${activeTenantId}`);
-    const customBatches = JSON.parse(localStorage.getItem(`junub_custom_batches_${activeTenantId}`) || '[]');
-    const batchMap = new Map<string, DrugBatch>();
-
-    const isItemDeleted = (b: any) => {
-      if (!b) return true;
-      return deletedIds.includes(b.id) || 
-             deletedIds.includes(b.drugId || '') || 
-             deletedIds.includes(b.name || '') || 
-             deletedIds.includes(b.batchNumber || '');
-    };
-
-    if (!isCleared && !isReset) {
-      getFallbackBatches().forEach(b => {
-        if (!isItemDeleted(b)) batchMap.set(b.id, b);
-      });
-    }
-
-    if (Array.isArray(customBatches)) {
-      customBatches.forEach(b => {
-        if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b);
-      });
-    }
-
-    if (cachedInvStr !== null) {
-      try {
-        const cachedInv = JSON.parse(cachedInvStr);
-        if (Array.isArray(cachedInv)) {
-          cachedInv.forEach((b: any) => {
-            if (b && b.id && !isItemDeleted(b)) {
-              if (!isCleared && !isReset) {
-                batchMap.set(b.id, b);
-              } else if (customBatches.some((cb: any) => cb.id === b.id)) {
-                batchMap.set(b.id, b);
-              }
-            }
-          });
-        }
-      } catch (e) {}
-    }
-
-    const instantBatches = (isCleared || isReset) && customBatches.length === 0 && batchMap.size === 0
-      ? []
-      : Array.from(batchMap.values()).filter(b => !isItemDeleted(b));
-    
-    setBatches(instantBatches);
-
-    // Instant transaction render from LocalStorage
-    const localTxStr = localStorage.getItem(`junub_transactions_${activeTenantId}`) || localStorage.getItem('trust_pharmacy_sales') || '[]';
-    let localTxList: any[] = [];
-    try { localTxList = JSON.parse(localTxStr); } catch(e){}
-    if (localTxList.length > 0) {
-      setRecentTransactions(localTxList);
-    }
-
-    // Finish loading immediately!
-    setLoading(false);
-
-    // Phase 2: NON-BLOCKING BACKGROUND NETWORK SYNC (Async in background)
-    setTimeout(async () => {
-      try {
-        const [resPos, resInv, bTenant, bGlobal, fsDeleted, fsCleared, apiDelRes, apiClearedRes] = await Promise.all([
-          fetch(`/api/v1/pos/batches?tenantId=${activeTenantId}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`/api/v1/${activeTenantId}/inventory/batches`).then(r => r.ok ? r.json() : null).catch(() => null),
-          loadBatchesFromFirestore(activeTenantId).catch(() => []),
-          loadBatchesFromFirestore('shared-global-tenant-v1').catch(() => []),
-          loadDeletedBatchesFromFirestore(activeTenantId).catch(() => []),
-          loadInventoryClearedFromFirestore(activeTenantId).catch(() => false),
-          fetch(`/api/v1/${activeTenantId}/inventory/deleted-batches`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`/api/v1/${activeTenantId}/inventory/is-cleared`).then(r => r.ok ? r.json() : null).catch(() => null)
-        ]);
-
-        if (fsCleared || (apiClearedRes && apiClearedRes.isCleared)) {
-          isCleared = true;
-          localStorage.setItem(`junub_inventory_cleared_${activeTenantId}`, 'true');
-        }
-        if (Array.isArray(fsDeleted)) {
-          fsDeleted.forEach(id => { if (id && !deletedIds.includes(id)) deletedIds.push(id); });
-        }
-        if (apiDelRes && apiDelRes.status === 'success' && Array.isArray(apiDelRes.data)) {
-          apiDelRes.data.forEach((id: string) => { if (id && !deletedIds.includes(id)) deletedIds.push(id); });
-        }
-
-        let apiBatches: DrugBatch[] = [];
-        if (resPos && resPos.status === 'success' && Array.isArray(resPos.data)) apiBatches.push(...resPos.data);
-        if (resInv && resInv.status === 'success' && Array.isArray(resInv.data)) {
-          resInv.data.forEach((b: any) => {
-            if (b && b.id && !apiBatches.some(existing => existing.id === b.id)) apiBatches.push(b);
-          });
-        }
-
-        if (Array.isArray(apiBatches) && !isCleared && !isReset) {
-          apiBatches.forEach(b => { if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b); });
-        }
-
-        if (!isCleared && !isReset) {
-          [...(Array.isArray(bTenant) ? bTenant : []), ...(Array.isArray(bGlobal) ? bGlobal : [])].forEach((b: any) => {
-            if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b);
-          });
-        }
-
-        const combined = (isCleared || isReset) && customBatches.length === 0 && batchMap.size === 0
-          ? []
-          : Array.from(batchMap.values()).filter(b => !isItemDeleted(b));
-        
-        setBatches(combined);
-        localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(combined));
-
-        // Transactions background update
-        const [txRes, fsTx] = await Promise.all([
-          fetch(`/api/v1/${activeTenantId}/transactions`).then(r => r.ok ? r.json() : null).catch(() => null),
-          loadTransactionsFromFirestore(activeTenantId).catch(() => [])
-        ]);
-
-        let serverTxList = (txRes && txRes.status === 'success' && Array.isArray(txRes.data)) ? txRes.data : [];
-        let firestoreTxList = Array.isArray(fsTx) ? fsTx : [];
-
-        // Collect all cached transactions from local storage keys
-        const cachedTxList: any[] = [];
-        [
-          `junub_transactions_${activeTenantId}`,
-          'trust_pharmacy_sales',
-          'junub_transactions_shared-global-tenant-v1'
-        ].forEach(key => {
-          try {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) cachedTxList.push(...parsed);
-            }
-          } catch(e) {}
-        });
-
-        const mergedMap = new Map();
-        serverTxList.forEach((t: any) => { const k = t.id || t.invoiceNumber; if (k) mergedMap.set(k, { ...t, isSynced: true }); });
-        firestoreTxList.forEach((t: any) => { const k = t.id || t.invoiceNumber; if (k && !mergedMap.has(k)) mergedMap.set(k, { ...t, isSynced: true }); });
-        cachedTxList.forEach((t: any) => {
-          const k = t.id || t.invoiceNumber;
-          if (k) {
-            const existing = mergedMap.get(k);
-            mergedMap.set(k, { ...existing, ...t });
-          }
-        });
-
-        const finalList = Array.from(mergedMap.values());
-        if (finalList.length > 0) {
-          setRecentTransactions(finalList);
-          try {
-            localStorage.setItem(`junub_transactions_${activeTenantId}`, JSON.stringify(finalList));
-            localStorage.setItem('trust_pharmacy_sales', JSON.stringify(finalList));
-          } catch(e) {}
-        }
-      } catch (err) {
-        console.warn("Background POS sync notice:", err);
-      }
-    }, 50);
-  };
-
-  const getFallbackBatches = (): DrugBatch[] => {
-    return [];
-  };
 
   // Comprehensive master categories list matching Drug Inventory Registration
   const categories = Array.from(new Set([...MASTER_DRUG_CATEGORIES, ...batches.map(b => b.category)]));
@@ -1051,26 +854,18 @@ export default function PharmacyPOS({
       }
     }
 
-    // Resolve active cashier name and email
-    const userSession = (() => {
-      try {
-        return JSON.parse(localStorage.getItem('junub_pharmacy_user_session') || '{}');
-      } catch (e) {
-        return {};
-      }
-    })();
-
-    const effectiveStaffEmail = (userEmail && userEmail !== 'junubposcenter@gmail.com')
-      ? userEmail
-      : (userSession.email || userEmail || 'junubposcenter@gmail.com');
-
+    // Resolve active cashier name and email from the signed-in Firebase user
+    // / matched Firestore staff record — no localStorage session lookup.
+    const effectiveStaffEmail = userEmail || 'junubposcenter@gmail.com';
     const currentStaffObj = activeTenant?.staff?.find((s: any) => s.email?.toLowerCase() === effectiveStaffEmail.toLowerCase());
-    const effectiveStaffName = currentStaffObj?.name || userSession.name || effectiveStaffEmail.split('@')[0] || 'Administrator';
+    const effectiveStaffName = currentStaffObj?.name || effectiveStaffEmail.split('@')[0] || 'Administrator';
 
     // Prepare transaction payload
     const nowIso = new Date().toISOString();
     const invoiceNumber = `INV-${activeTenantId.substring(7, 10).toUpperCase()}-POS-${Math.floor(100000 + Math.random() * 900000)}`;
-    const currentBranchId = selectedStore !== 'all' ? selectedStore : (cart[0]?.batch.storeId || 'branch-dt-1');
+    const currentBranchId = (selectedStore && selectedStore !== 'all' && selectedStore !== 'All') 
+      ? selectedStore 
+      : (restrictedStoreId || (initialBranchId && initialBranchId !== 'all' && initialBranchId !== 'All' ? initialBranchId : availableBranches[0]?.id || 'main-branch'));
     const currentBranchObj = availableBranches.find(b => b.id === currentBranchId) || availableBranches[0];
     const branchName = currentBranchObj?.name || 'Royal Trust Pharmacy - Main Branch';
     const branchAddress = currentBranchObj?.address || activeTenant?.address || 'Airport Road, Juba Town, South Sudan';
@@ -1093,20 +888,20 @@ export default function PharmacyPOS({
       branchAddress,
       branchPhone,
       items: cart.map(item => ({
-        drugId: item.batch.drugId,
-        batchNumber: item.batch.batchNumber,
-        name: item.batch.name,
+        drugId: item.batch.drugId || '',
+        batchNumber: item.batch.batchNumber || '',
+        name: item.batch.name || '',
         quantity: item.quantity,
         price: getCartItemUnitPrice(item),
-        cost: item.batch.cost
+        cost: item.batch.cost ?? 0
       })),
       subtotal,
       discount,
       tax,
       total,
       paymentMethod,
-      customerName: selectedCustomer ? selectedCustomer.name : undefined,
-      prescriptionId: verifiedRx ? verifiedRx.id : undefined,
+      customerName: selectedCustomer ? selectedCustomer.name : '',
+      prescriptionId: verifiedRx ? verifiedRx.id : '',
       isSynced: false
     };
 
@@ -1129,42 +924,17 @@ export default function PharmacyPOS({
       }
       return b;
     });
+    // Optimistic UI only — React state, no localStorage mirror. The live
+    // Firestore subscription (set up above) will reconcile shortly after
+    // the writes below land.
     setBatches(updatedBatches);
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
-
-    // B. Update custom batches list in local storage if applicable
-    const customBatchesStr = localStorage.getItem(`junub_custom_batches_${activeTenantId}`);
-    if (customBatchesStr) {
-      try {
-        const customList = JSON.parse(customBatchesStr);
-        const updatedCustom = customList.map((cb: any) => {
-          const cartItem = cart.find(item => item.batch.id === cb.id || item.batch.batchNumber === cb.batchNumber || (item.batch.name && cb.name && item.batch.name.toLowerCase() === cb.name.toLowerCase()));
-          if (cartItem) {
-            return { ...cb, quantity: Math.max(0, cb.quantity - cartItem.quantity) };
-          }
-          return cb;
-        });
-        localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updatedCustom));
-      } catch (e) {}
-    }
 
     // C. Adjust customer credit profile if payment method is 'credit'
     if (paymentMethod === 'credit' && selectedCustomerId) {
       setCustomers(prev => prev.map(c => c.id === selectedCustomerId ? { ...c, currentBalance: c.currentBalance + total } : c));
     }
 
-    // D. Save transaction optimistically to local storage (retaining ALL existing sales and branches)
-    try {
-      const key = `junub_transactions_${activeTenantId}`;
-      const existingTx = JSON.parse(localStorage.getItem(key) || '[]');
-      const updatedTxList = [checkoutPayload, ...existingTx.filter((t: any) => t.id !== checkoutPayload.id && t.invoiceNumber !== checkoutPayload.invoiceNumber)];
-      localStorage.setItem(key, JSON.stringify(updatedTxList));
-      localStorage.setItem('trust_pharmacy_sales', JSON.stringify(updatedTxList));
-      localStorage.removeItem(`junub_reports_cleared_${activeTenantId}`);
-      localStorage.removeItem('junub_reports_cleared_shared-global-tenant-v1');
-    } catch (e) {}
-
-    // E. Update recent transactions list in state
+    // D. Update recent transactions list in state
     setRecentTransactions(prev => [checkoutPayload, ...prev]);
 
     // F. Display receipt modal & trigger direct auto-print optimistically
@@ -1203,20 +973,22 @@ export default function PharmacyPOS({
     // STEP 2: BACKEND CONFIRMATION CALLBACK (Async Processing)
     // ====================================================
     if (isOffline) {
-      const newQueue = [...syncQueue, checkoutPayload];
-      setSyncQueue(newQueue);
-      localStorage.setItem(`jubu_offline_queue_${activeTenantId}`, JSON.stringify(newQueue));
+      // In-memory only — no localStorage persistence. The app requires
+      // internet; this queue exists only to smooth over brief connectivity
+      // blips within the current session, not as an offline data store.
+      setSyncQueue((prev) => [...prev, checkoutPayload]);
       return;
     }
 
     // Asynchronous background backend call & Firestore confirmation pipeline
     (async () => {
       try {
-        // Sync updated batch stock to Firestore
+        // Sync updated batch stock to Firestore, scoped to this branch —
+        // matches the required /pharmacy/{pharmacyId}/branches/{branchId}/products path.
         updatedBatches.forEach(ub => {
           const wasSold = checkoutPayload.items.some(ci => ci.drugId === ub.drugId || ci.batchNumber === ub.batchNumber || (ci.name && ub.name && ci.name.toLowerCase() === ub.name.toLowerCase()));
           if (wasSold) {
-            saveBatchToFirestore('shared-global-tenant-v1', ub as any).catch(e => console.warn(e));
+            saveBatchToFirestore(currentBranchId, ub as any).catch(e => console.warn(e));
           }
         });
 
@@ -1226,6 +998,8 @@ export default function PharmacyPOS({
           isSynced: true,
           id: checkoutPayload.id || invoiceNumber,
           tenantId: activeTenantId,
+          branchId: currentBranchId,
+          storeId: currentBranchId,
           invoiceNumber: checkoutPayload.invoiceNumber || invoiceNumber,
           items: checkoutPayload.items as any,
           subtotal: checkoutPayload.subtotal,
@@ -1240,12 +1014,13 @@ export default function PharmacyPOS({
           createdAt: new Date().toISOString()
         };
         
-        saveTransactionToFirestore('shared-global-tenant-v1', firestoreTx).catch(err => console.warn("Firestore POS save notice:", err));
-        if (activeTenantId !== 'shared-global-tenant-v1') {
-          saveTransactionToFirestore(activeTenantId, firestoreTx).catch(err => console.warn("Firestore POS save notice:", err));
-        }
+        saveTransactionToFirestore(currentBranchId, firestoreTx).catch(err => console.warn("Firestore POS save notice:", err));
 
-        // Send to backend API
+        // Legacy Express backend call — this endpoint isn't part of the
+        // Firestore-backed data path and predates this conversion; left
+        // as a best-effort call for any downstream consumers, but is no
+        // longer relied upon for sale persistence (Firestore write above is
+        // the source of truth).
         const response = await fetch(`/api/v1/${activeTenantId}/transactions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1278,19 +1053,8 @@ export default function PharmacyPOS({
         if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
           const data = await response.json();
           if (data && data.status === 'success' && data.data) {
-            const confirmedTx = { ...checkoutPayload, ...data.data, isSynced: true };
-            try {
-              const key = `junub_transactions_${activeTenantId}`;
-              const existingTx = JSON.parse(localStorage.getItem(key) || '[]');
-              const updatedTxList = [confirmedTx, ...existingTx.filter((t: any) => t.id !== confirmedTx.id && t.invoiceNumber !== confirmedTx.invoiceNumber)];
-              localStorage.setItem(key, JSON.stringify(updatedTxList));
-              localStorage.setItem('trust_pharmacy_sales', JSON.stringify(updatedTxList));
-            } catch (e) {}
-
-            // Re-dispatch live event with confirmed data
-            window.dispatchEvent(new Event('junub_inventory_updated'));
-            window.dispatchEvent(new Event('junub_transaction_added'));
-            window.dispatchEvent(new Event('storage'));
+            // Confirmation received — the live Firestore subscription above
+            // already reflects this sale, no local cache needed.
           }
         }
       } catch (err) {
@@ -1299,78 +1063,45 @@ export default function PharmacyPOS({
     })();
   };
 
-  // Synchronize Offline Queue
+  // Synchronize the in-memory offline queue by actually writing each queued
+  // sale to Firestore (the previous version of this function only pretended
+  // to sync — it hit a nonexistent API endpoint, then declared success and
+  // silently discarded the queued sales either way. That's fixed here.)
   const handleCloudSynchronize = async () => {
     if (syncQueue.length === 0) {
       alert("Synchronization info: Sync queue is completely empty.");
       return;
     }
+    if (isOffline) {
+      alert("Still offline — reconnect to the internet before syncing.");
+      return;
+    }
 
     setSyncing(true);
-    setSyncMessage('Establishing high-compliance TLS pipeline to Cloud API...');
-    
-    // Simulate sync
-    setTimeout(() => {
-      setSyncMessage(`Parsing ${syncQueue.length} payloads, verifying medical inventory locks...`);
-      
-      setTimeout(async () => {
-        try {
-          // Send queue to bulk sync api endpoint
-          const response = await fetch(`/api/v1/pos/sync`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              tenantId: activeTenantId,
-              salesQueue: syncQueue
-            })
-          });
-
-          const data = await response.json();
-          if (data.status === 'success') {
-            // Log to HIPAA Audit Trail
-            logAuditEvent(
-              'Sale',
-              'SALE_SYNCED_BULK',
-              `Successfully synchronized ${syncQueue.length} cached offline point-of-sale transactions to clinical database server.`,
-              'high',
-              undefined,
-              JSON.stringify({ synced_sales_count: syncQueue.length, total_synced: syncQueue.reduce((sum, q) => sum + q.total, 0) }),
-              userEmail,
-              activeRole
-            );
-
-            // Success! Drain sync queue
-            setSyncQueue([]);
-            localStorage.removeItem(`jubu_offline_queue_${activeTenantId}`);
-            setSyncMessage('SUCCESS: Cloud synchronization finished! Tenant tables updated.');
-            loadBatchesAndSales(); // refresh stock numbers from backend
-          } else {
-            setSyncMessage(`Sync partially failed: ${data.message}`);
-          }
-        } catch (e) {
-          // If api endpoint not ready, do high-fidelity sandbox sync simulations
-          // Log to HIPAA Audit Trail
-          logAuditEvent(
-            'Sale',
-            'SALE_SYNCED_BULK',
-            `Bulk sync simulation completed. Processed ${syncQueue.length} transactions and successfully committed locks to browser local ledger.`,
-            'high',
-            undefined,
-            JSON.stringify({ synced_sales_count: syncQueue.length }),
-            userEmail,
-            activeRole
-          );
-
-          setSyncQueue([]);
-          localStorage.removeItem(`jubu_offline_queue_${activeTenantId}`);
-          setSyncMessage('✓ SYNC COMPLETE: Simulation cleared offline transaction logs & committed to browser virtual DB.');
-          loadBatchesAndSales();
-        } finally {
-          setSyncing(false);
-          setTimeout(() => setSyncMessage(''), 4000);
-        }
-      }, 1500);
-    }, 1000);
+    setSyncMessage(`Synchronizing ${syncQueue.length} queued sale(s) to Firestore...`);
+    try {
+      for (const sale of syncQueue) {
+        await saveTransactionToFirestore(activeTenantId, { ...sale, isSynced: true } as any);
+      }
+      logAuditEvent(
+        'Sale',
+        'SALE_SYNCED_BULK',
+        `Successfully synchronized ${syncQueue.length} queued point-of-sale transactions to Firestore.`,
+        'high',
+        undefined,
+        JSON.stringify({ synced_sales_count: syncQueue.length, total_synced: syncQueue.reduce((sum, q) => sum + q.total, 0) }),
+        userEmail,
+        activeRole
+      );
+      setSyncQueue([]);
+      setSyncMessage('SUCCESS: All queued sales synchronized to Firestore.');
+    } catch (e) {
+      console.error('Cloud sync error:', e);
+      setSyncMessage('Sync failed — check your connection and try again. Queued sales were kept.');
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMessage(''), 4000);
+    }
   };
 
   // Valuation computations
@@ -1478,14 +1209,11 @@ export default function PharmacyPOS({
 
     const updatedBatchesList = [newBatch, ...batches];
     setBatches(updatedBatchesList);
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatchesList));
-    localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updatedBatchesList));
 
-    // Save to Firestore & server API
+    // Save to this branch's Firestore path (products + batches) — no
+    // localStorage, no global-tenant mirror write.
     saveBatchToFirestore(activeTenantId, newBatch as any).catch(e => console.warn(e));
-    saveBatchToFirestore('shared-global-tenant-v1', newBatch as any).catch(e => console.warn(e));
-    saveDrugToFirestore('shared-global-tenant-v1', newBatch as any).catch(e => console.warn("Firestore POS drug save error:", e));
-    window.dispatchEvent(new Event('junub_inventory_updated'));
+    saveDrugToFirestore(activeTenantId, newBatch as any).catch(e => console.warn("Firestore POS drug save error:", e));
     
     fetch(`/api/v1/${activeTenantId}/inventory/batches`, {
       method: 'POST',
@@ -2984,13 +2712,7 @@ export default function PharmacyPOS({
                         </span>
                       )}
                       <h3 className="font-extrabold text-sm uppercase text-slate-900 tracking-tight">
-                        {(() => {
-                          const saved = localStorage.getItem('trust_pharmacy_contact');
-                          if (saved) {
-                            try { return JSON.parse(saved).name || activeTenant?.name || "Trust Pharmacy"; } catch (e) {}
-                          }
-                          return activeTenant?.name || "Trust Pharmacy";
-                        })()}
+                        {activeTenant?.name || "Trust Pharmacy"}
                       </h3>
                       {bName && (
                         <div className="px-2.5 py-0.5 bg-slate-900 text-white text-[10px] font-black uppercase rounded tracking-wider mt-0.5">

@@ -32,7 +32,7 @@ export interface Tenant {
   plan: 'starter' | 'professional' | 'enterprise';
   billingCycle: 'monthly' | 'annual';
   registeredAt: string;
-  dbIsolationMode: 'shared_schema_tenant_id' | 'schema_per_tenant' | 'database_per_tenant';
+  dbIsolationMode: 'shared_schema_tenant_id' | 'schema_per_tenant' | 'database_per_tenant' | 'single_tenant';
   brandingColor: string;
   logoIcon?: 'cross' | 'capsule' | 'heart' | 'shield' | 'activity' | string;
   address: string;
@@ -97,41 +97,57 @@ export const MASTER_DRUG_CATEGORIES = [
   'Controlled Drugs and Narcotics (Controlled Substances)'
 ];
 
+export interface DrugInteractionResult {
+  severity?: 'high' | 'moderate' | 'low' | 'none';
+  overallRiskLevel?: string;
+  summary?: string;
+  description?: string;
+  recommendation?: string;
+  interactions?: any[];
+  allergyWarnings?: any[];
+  specialPrecautions?: any[];
+  [key: string]: any;
+}
+
+export interface CounselingGuide {
+  indications?: string;
+  dosageInstructions?: string;
+  sideEffects?: string[];
+  warnings?: string[];
+  medicationOverview?: string;
+  howToTake?: any;
+  commonSideEffects?: any;
+  foodAndDrinkInteractions?: any;
+  whatIfMissedDose?: any;
+  storageInstructions?: any;
+  [key: string]: any;
+}
+
 export interface DrugItem {
   id: string;
-  tenantId: string;
-  name: string;
-  genericName: string;
-  sku: string;
-  category: 
-    | 'Antibiotics'
-    | 'Analgesics (Pain Relievers)'
-    | 'Antimalarials'
-    | 'Antihypertensives'
-    | 'Antidiabetics'
-    | 'Antifungals'
-    | 'Antivirals'
-    | 'Antihistamines'
-    | 'Gastrointestinal Drugs'
-    | 'Vitamins and Supplements'
-    | 'Vaccines and Immunological Agents'
-    | 'Hormonal Drugs'
-    | 'Respiratory Drugs'
-    | 'Dermatological Drugs'
-    | 'Ophthalmic Drugs (Eye Medications)'
-    | 'Cardiovascular Drugs'
-    | 'Central Nervous System (CNS) Drugs'
-    | 'Intravenous Fluids and Electrolytes'
-    | 'Contraceptives and Reproductive Health Drugs'
-    | 'Controlled Drugs and Narcotics (Controlled Substances)'
-    | string;
-  stock: number;
-  minStockAlert: number;
-  price: number;
-  cost: number;
-  expiryDate: string;
-  shelfLocation: string;
-  requiresPrescription: boolean;
+  tenantId?: string;
+  name?: string;
+  genericName?: string;
+  brandName?: string;
+  strength?: string;
+  ndc?: string;
+  batchNumber?: string;
+  sku?: string;
+  category?: string;
+  stock?: number;
+  stockQuantity?: number;
+  minStockAlert?: number;
+  reorderLevel?: number;
+  price?: number;
+  unitPrice?: number;
+  cost?: number;
+  expiryDate?: string;
+  shelfLocation?: string;
+  requiresPrescription?: boolean;
+  isControlled?: boolean;
+  scheduleClass?: string;
+  dosageForm?: string;
+  [key: string]: any;
 }
 
 export interface Prescription {
@@ -294,7 +310,7 @@ export interface ControlledLogEntry {
 }
 
 export interface POSCartItem {
-  id: string;
+  id?: string;
   batchId?: string;
   name?: string;
   quantity?: number;
@@ -323,4 +339,7 @@ export interface PurchaseOrder {
   createdAt?: string;
   [key: string]: any;
 }
+
+export type SaleTransaction = Transaction;
+export type SaleItem = POSCartItem;
 

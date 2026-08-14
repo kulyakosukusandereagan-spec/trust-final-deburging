@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { auth } from '../lib/firebase';
+import { auth, createStaffInFirebaseAuth } from '../lib/firebase';
 import { loadDeletedStaffFromFirestore, deleteStaffAccountFromFirestore } from '../lib/firebaseSync';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { 
   Plus, 
   MapPin, 
@@ -22,11 +21,15 @@ import { Tenant, Branch, Staff, StaffRole } from '../types';
 interface BranchesStaffManagerProps {
   tenant: Tenant;
   activeRole?: string;
+  userEmail?: string;
   onUpdateTenant: (updatedTenant: Tenant) => void;
 }
 
-export default function BranchesStaffManager({ tenant, activeRole = 'Administrator', onUpdateTenant }: BranchesStaffManagerProps) {
+export default function BranchesStaffManager({ tenant, activeRole = 'Administrator', userEmail, onUpdateTenant }: BranchesStaffManagerProps) {
   const [activeSubTab, setActiveSubTab] = useState<'branches' | 'staff'>('branches');
+  
+  const activeUserEmail = (userEmail || auth?.currentUser?.email || '').toLowerCase();
+  const isMasterAdmin = activeUserEmail === 'junubposcenter@gmail.com';
   
   // Modals state
   const [showBranchModal, setShowBranchModal] = useState(false);
@@ -102,48 +105,11 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
   const staff = React.useMemo(() => {
     const staffMap = new Map<string, Staff>();
 
-    // 1. Tenant staff
+    // 100% Live Firestore Staff accounts
     (tenant.staff || []).forEach(s => {
       if (s.email) staffMap.set(s.email.toLowerCase(), s);
       else if (s.id) staffMap.set(s.id, s);
     });
-
-    // 2. Master registered staff from localStorage
-    try {
-      const regStr = localStorage.getItem('junub_registered_staff');
-      if (regStr) {
-        const regList = JSON.parse(regStr);
-        regList.forEach((s: any) => {
-          if (s.email) {
-            const key = s.email.toLowerCase();
-            const existing = staffMap.get(key);
-            staffMap.set(key, { ...existing, ...s });
-          }
-        });
-      }
-    } catch (e) {}
-
-    // 3. User session staff
-    try {
-      const sessionStr = localStorage.getItem('junub_pharmacy_user_session');
-      if (sessionStr) {
-        const session = JSON.parse(sessionStr);
-        if (session.email) {
-          const key = session.email.toLowerCase();
-          if (!staffMap.has(key)) {
-            staffMap.set(key, {
-              id: session.uid || `staff-session-${Date.now()}`,
-              name: session.name || session.email.split('@')[0],
-              email: key,
-              role: session.role || 'Pharmacist',
-              isActive: true,
-              isVerified: true,
-              branchId: session.branchId || (branches[0] ? branches[0].id : undefined)
-            });
-          }
-        }
-      }
-    } catch (e) {}
 
     let delIds: string[] = [];
     let delEmails: string[] = [];
@@ -172,6 +138,10 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
   const handleSaveEditStaff = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingStaff) return;
+    if (!isMasterAdmin) {
+      alert('Access Restricted: Only Master Admin (junubposcenter@gmail.com) is authorized to edit staff profiles or reassign branches.');
+      return;
+    }
     if (!staffName.trim() || !staffEmail.trim()) return;
 
     const updatedMember: Staff = {
@@ -195,11 +165,14 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     onUpdateTenant(updatedTenant);
 
     // Save directly to Firestore staff collection
-    const uidToUse = auth?.currentUser?.uid || 'shared-global-tenant-v1';
     import('../lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-      saveStaffAccountToFirestore(uidToUse, updatedMember, tenant.id)
+      saveStaffAccountToFirestore(updatedMember.branchId || 'main', updatedMember)
         .catch(err => console.warn("Notice saving updated staff to Firestore:", err));
     });
+
+    // Ensure staff exists in Firebase Authentication
+    createStaffInFirebaseAuth(updatedMember.email, updatedMember.password || 'Staff123!')
+      .catch(err => console.warn("Notice updating user in Firebase Auth:", err));
 
     // Update active user session if the edited staff is currently logged in
     try {
@@ -341,15 +314,20 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     reader.readAsDataURL(file);
   };
 
-  // Register New Staff Member & Role (Administrator Only)
+  // Register New Staff Member & Role (Master Admin Only)
   const handleAddStaff = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isMasterAdmin) {
+      alert('Access Restricted: Only Master Admin (junubposcenter@gmail.com) is authorized to register staff members and assign branches.');
+      return;
+    }
+
     const cleanEmail = staffEmail.trim().toLowerCase();
     if (!staffName.trim() || !cleanEmail) return;
 
     // 1. Mandatory Branch Selection Check
     if (!staffBranchId) {
-      alert('Branch Assignment Required! Please select a pharmacy branch for this staff member (e.g. Main Branch or Branch 2).');
+      alert('Branch Assignment Required! Please select a pharmacy branch for this staff member (e.g. Main Branch, Wau Branch, or Juba Branch).');
       return;
     }
 
@@ -367,8 +345,6 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       return;
     }
 
-    const isAdminOrOwner = ['Master Admin', 'Administrator'].includes(activeRole);
-
     const newStaff: Staff = {
       id: `staff-${Date.now()}`,
       name: staffName.trim(),
@@ -376,7 +352,7 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       password: staffPassword || 'Staff123!',
       role: staffRole,
       isActive: true,
-      isVerified: isAdminOrOwner ? true : false,
+      isVerified: true,
       branchId: staffBranchId
     };
 
@@ -389,12 +365,9 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     onUpdateTenant(updatedTenant);
 
     // Save directly to Firestore staff collection online so staff can log in from any device instantly
-    const uidToUse = auth?.currentUser?.uid || 'shared-global-tenant-v1';
     import('../lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-      saveStaffAccountToFirestore(uidToUse, newStaff, tenant.id)
+      saveStaffAccountToFirestore(newStaff.branchId || 'main-branch', newStaff)
         .catch(err => console.warn("Notice saving staff to Firestore:", err));
-      saveStaffAccountToFirestore('shared-global-tenant-v1', newStaff, 'tenant-downtown')
-        .catch(err => console.warn("Notice saving staff to global Firestore collection:", err));
     });
 
     // Save to master standalone local registered staff store
@@ -411,13 +384,9 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       body: JSON.stringify(newStaff)
     }).catch(err => console.warn("Notice syncing staff to backend:", err));
 
-    // Fire-and-forget background Firebase Auth account creation
-    if (auth && staffEmail) {
-      createUserWithEmailAndPassword(auth, staffEmail.toLowerCase(), staffPassword || 'Staff123!')
-        .catch(() => {
-          // Account might already exist in Firebase Auth or network offline
-        });
-    }
+    // Register user in Firebase Authentication safely via Secondary Auth instance
+    createStaffInFirebaseAuth(cleanEmail, staffPassword || 'Staff123!')
+      .catch(err => console.warn("Notice registering user in Firebase Auth:", err));
 
     // Reset form
     setStaffName('');
@@ -723,18 +692,48 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       {/* Staff Panel */}
       {activeSubTab === 'staff' && (
         <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Staff Registry & Role Allocation</h3>
-              <p className="text-[11px] text-slate-500">Assign roles, emails, and clinic branches to your team.</p>
+          {/* Master Admin Authorization Control Banner */}
+          <div className={`p-3.5 rounded-2xl border text-xs font-bold flex items-center justify-between gap-3 ${
+            isMasterAdmin 
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
+              : 'bg-amber-50 border-amber-200 text-amber-900'
+          }`}>
+            <div className="flex items-center gap-2">
+              {isMasterAdmin ? (
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+              )}
+              <span>
+                {isMasterAdmin 
+                  ? "Master Admin Authorized (junubposcenter@gmail.com) — Full authority to register staff accounts in Firebase Auth & assign branches."
+                  : "Staff Registration & Branch Assignment Restricted — Only Master Admin (junubposcenter@gmail.com) is authorized to register staff members or assign branches."}
+              </span>
             </div>
-            <button
-              onClick={() => setShowStaffModal(true)}
-              className="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <UserPlus className="h-4 w-4" />
-              Register New Staff
-            </button>
+            <span className="text-[10px] font-mono font-black uppercase px-2.5 py-1 rounded-lg bg-white/90 border border-slate-200 shadow-2xs">
+              {isMasterAdmin ? '👑 Master Admin' : '🔒 Staff View'}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap justify-between items-center gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Staff Registry &amp; Branch Assignment</h3>
+              <p className="text-[11px] text-slate-500">Master Admin registers staff accounts directly into Firebase Authentication and assigns branch locations.</p>
+            </div>
+            {isMasterAdmin ? (
+              <button
+                onClick={() => setShowStaffModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+              >
+                <UserPlus className="h-4 w-4" />
+                <span>Register New Staff</span>
+              </button>
+            ) : (
+              <div className="bg-slate-100 border border-slate-200 text-slate-500 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5">
+                <Lock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                <span>Registration Restricted to Master Admin</span>
+              </div>
+            )}
           </div>
 
           <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">

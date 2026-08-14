@@ -433,9 +433,9 @@ export const AICounselor: React.FC<AICounselorProps> = ({ drugs, patients }) => 
                   <div>
                     <h4 className="font-bold text-emerald-400 mb-1 text-xs">How to take this medication:</h4>
                     <ul className="list-disc pl-4 space-y-1 text-slate-300">
-                      {guideResult.howToTake.map((step, idx) => (
+                      {Array.isArray(guideResult.howToTake) ? guideResult.howToTake.map((step: any, idx: number) => (
                         <li key={idx}>{step}</li>
-                      ))}
+                      )) : <li>{guideResult.howToTake}</li>}
                     </ul>
                   </div>
 

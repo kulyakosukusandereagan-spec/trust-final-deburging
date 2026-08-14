@@ -5,7 +5,7 @@ import {
   Building2, Users, AlertCircle, Coins, Sparkles, Sliders, Trash2,
   RefreshCw, RotateCcw
 } from 'lucide-react';
-import { saveExpenditureToFirestore } from '../lib/firebaseSync';
+import { saveExpenditureToFirestore, subscribeToExpendituresFirestore } from '../lib/firebaseSync';
 
 export interface ExpenditureItem {
   id: string;
@@ -113,44 +113,17 @@ export default function ExpendituresManager({
     }
   ];
 
-  // Persistent Expenditures State
-  const [expenditures, setExpenditures] = useState<ExpenditureItem[]>(() => {
-    const isReset = typeof window !== 'undefined' && localStorage.getItem('trust_pharmacy_factory_reset') === 'true';
-    const saved = localStorage.getItem('junub_expenditures');
-    if (saved !== null) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch (e) {
-        console.warn("Failed parsing cached expenditures:", e);
-      }
-    }
-    if (isReset) {
-      return [];
-    }
-    return getInitialSampleExpenditures();
-  });
+  // Live Firestore subscription is the data layer now — no localStorage
+  // persistence, no sample seed data on load (that was only ever a local
+  // demo fallback).
+  const [expenditures, setExpenditures] = useState<ExpenditureItem[]>([]);
 
-  // Sync to localStorage
   useEffect(() => {
-    localStorage.setItem('junub_expenditures', JSON.stringify(expenditures));
-  }, [expenditures]);
-
-  // Listen to system factory reset and global reset events
-  useEffect(() => {
-    const handleSystemReset = () => {
-      setExpenditures([]);
-      setSelectedIds([]);
-      localStorage.setItem('junub_expenditures', JSON.stringify([]));
-    };
-
-    window.addEventListener('junub_system_reset', handleSystemReset);
-    window.addEventListener('system_factory_reset', handleSystemReset);
-    return () => {
-      window.removeEventListener('junub_system_reset', handleSystemReset);
-      window.removeEventListener('system_factory_reset', handleSystemReset);
-    };
-  }, []);
+    const unsub = subscribeToExpendituresFirestore(activeTenantId, (items) => {
+      setExpenditures(items as ExpenditureItem[]);
+    });
+    return () => unsub();
+  }, [activeTenantId]);
 
   // Modal & Selection States
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
@@ -217,7 +190,7 @@ export default function ExpendituresManager({
       createdAt: new Date().toISOString()
     };
 
-    saveExpenditureToFirestore('shared-global-tenant-v1', newItem as any)
+    saveExpenditureToFirestore(activeTenantId, newItem as any)
       .catch(err => console.warn("Firestore expenditure save notice:", err));
 
     setExpenditures([newItem, ...expenditures]);
@@ -323,21 +296,21 @@ export default function ExpendituresManager({
     setSelectedIds([]);
   };
 
-  // Clear Entire Ledger
-  const handleClearAllExpenditures = () => {
-    setExpenditures([]);
-    setSelectedIds([]);
-    localStorage.setItem('junub_expenditures', JSON.stringify([]));
-    setShowClearAllModal(false);
-    alert("Expenditure ledger has been completely erased and reset!");
-  };
-
-  // Repopulate Sample Records
-  const handleSeedDemoExpenditures = () => {
-    const samples = getInitialSampleExpenditures();
-    setExpenditures(samples);
-    localStorage.setItem('junub_expenditures', JSON.stringify(samples));
-    alert("Loaded standard sample expenditure records!");
+  // Clear Entire Ledger — actually deletes every expenditure doc under this
+  // branch in Firestore, not just local state.
+  const handleClearAllExpenditures = async () => {
+    try {
+      const { loadExpendituresFromFirestore, deleteExpenditureFromFirestore } = await import('../lib/firebaseSync');
+      const items = await loadExpendituresFromFirestore(activeTenantId);
+      await Promise.all(items.map((it: any) => deleteExpenditureFromFirestore(activeTenantId, it.id)));
+      setExpenditures([]);
+      setSelectedIds([]);
+      setShowClearAllModal(false);
+      alert("Expenditure ledger has been completely erased and reset!");
+    } catch (e) {
+      console.error('Failed to clear expenditures:', e);
+      alert("Failed to erase expenditure records — check your connection and try again.");
+    }
   };
 
   // Filtered List
@@ -401,7 +374,7 @@ export default function ExpendituresManager({
                 <span>Manager Limit: ${managerApprovalLimitUsd} USD</span>
               </button>
 
-              {expenditures.length > 0 ? (
+              {expenditures.length > 0 && (
                 <button
                   onClick={() => setShowClearAllModal(true)}
                   className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold text-xs rounded-2xl border border-rose-200 transition-all flex items-center gap-1.5 cursor-pointer"
@@ -409,15 +382,6 @@ export default function ExpendituresManager({
                 >
                   <Trash2 className="w-3.5 h-3.5 text-rose-600" />
                   <span>Erase All Records</span>
-                </button>
-              ) : (
-                <button
-                  onClick={handleSeedDemoExpenditures}
-                  className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-extrabold text-xs rounded-2xl border border-indigo-200 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Load initial sample expenditure data"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Load Sample Records</span>
                 </button>
               )}
             </>

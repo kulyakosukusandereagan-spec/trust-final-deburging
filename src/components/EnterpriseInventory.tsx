@@ -502,7 +502,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
         const payload = await res.json();
         if (payload.status === 'success') {
           setQrScanSuccessMsg(`SUCCESS: Received +${qrReceivingQty} units into central inventory for "${parsedQRData.medicine_name}"!`);
-          fetchInventoryData();
           fetch(`/api/v1/${activeTenantId}/scanning/logs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -539,7 +538,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
         const payload = await res.json();
         if (payload.status === 'success') {
           setQrScanSuccessMsg(`SUCCESS: Created new lot batch and received +${qrReceivingQty} units of "${parsedQRData.medicine_name}"!`);
-          fetchInventoryData();
           fetchScanActivityLogs();
         }
       }
@@ -574,7 +572,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       const data = await res.json();
       if (data.status === 'success') {
         setQrScanSuccessMsg(`SUCCESS: Stock transfer complete! Dispatched ${qrTransferQty} units of "${sourceBatch.name}" to ${qrTransferDestBranch === "store-1" ? "Central Pharmacy" : "Northside Dispensary"}`);
-        fetchInventoryData();
         fetchScanActivityLogs();
       } else {
         setQrScanErrorMsg(data.message || "Failed executing branch transfer.");
@@ -616,7 +613,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       const data = await res.json();
       if (data.status === 'success') {
         setQrScanSuccessMsg(`SUCCESS: Stock reconciled! Book stock: ${bookQty}, Physical: ${qrAuditPhysicalQty}, Discrepancy: ${diff >= 0 ? "+" : ""}${diff} units logged successfully.`);
-        fetchInventoryData();
         fetchScanActivityLogs();
       }
     } catch (e) {
@@ -642,7 +638,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       const data = await res.json();
       if (data.status === 'success') {
         setQrScanSuccessMsg(`SUCCESS: Updated medicine batch settings successfully.`);
-        fetchInventoryData();
         
         fetch(`/api/v1/${activeTenantId}/scanning/logs`, {
           method: 'POST',
@@ -661,140 +656,16 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     }
   };
 
-  const getFallbackBatches = (): InventoryBatch[] => {
-    return [];
-  };
-
-  // Fetch Core Data
-  const fetchInventoryData = async () => {
-    // Phase 1: FAST INSTANT LOCAL RENDER (0ms wait time)
-    const isCleared = localStorage.getItem(`junub_inventory_cleared_${activeTenantId}`) === 'true';
-    const deletedStr = localStorage.getItem(`junub_deleted_batches_${activeTenantId}`) || '[]';
-    let deletedIds: string[] = [];
-    try { deletedIds = JSON.parse(deletedStr); } catch(e) {}
-
-    const isItemDeleted = (b: any) => {
-      if (!b) return true;
-      return deletedIds.includes(b.id) || 
-             deletedIds.includes(b.drugId || '') || 
-             deletedIds.includes(b.name || '') || 
-             deletedIds.includes(b.batchNumber || '');
-    };
-
-    const batchMap = new Map<string, InventoryBatch>();
-
-    if (!isCleared) {
-      getFallbackBatches().forEach(b => {
-        if (!isItemDeleted(b)) batchMap.set(b.id, b);
-      });
-    }
-
-    const customBatchesStr = localStorage.getItem(`junub_custom_batches_${activeTenantId}`);
-    if (customBatchesStr) {
-      try {
-        const parsedCustom = JSON.parse(customBatchesStr);
-        if (Array.isArray(parsedCustom)) {
-          parsedCustom.forEach((b: InventoryBatch) => {
-            if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b);
-          });
-        }
-      } catch (e) {}
-    }
-
-    const cachedBatches = localStorage.getItem(`junub_inventory_batches_${activeTenantId}`);
-    if (cachedBatches) {
-      try {
-        const parsed = JSON.parse(cachedBatches);
-        if (Array.isArray(parsed)) {
-          parsed.forEach((b: InventoryBatch) => {
-            if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b);
-          });
-        }
-      } catch (e) {}
-    }
-
-    const instantBatches = isCleared && !cachedBatches && !customBatchesStr && batchMap.size === 0
-      ? [] 
-      : Array.from(batchMap.values()).filter(b => !isItemDeleted(b));
-    
-    setBatches(instantBatches);
-    setLoading(false);
-
-    // Phase 2: NON-BLOCKING BACKGROUND NETWORK SYNC WITH FIREBASE CLOUD
-    setTimeout(async () => {
-      try {
-        const [res, tenantFirestoreBatches, globalFirestoreBatches, fsDeleted, apiDelRes, movRes] = await Promise.all([
-          fetch(`/api/v1/${activeTenantId}/inventory/batches`).then(r => r.ok ? r.json() : null).catch(() => null),
-          loadBatchesFromFirestore(activeTenantId).catch(() => []),
-          loadBatchesFromFirestore('shared-global-tenant-v1').catch(() => []),
-          loadDeletedBatchesFromFirestore(activeTenantId).catch(() => []),
-          fetch(`/api/v1/${activeTenantId}/inventory/deleted-batches`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`/api/v1/${activeTenantId}/inventory/movements`).then(r => r.ok ? r.json() : null).catch(() => null)
-        ]);
-
-        if (Array.isArray(fsDeleted)) {
-          fsDeleted.forEach(id => { if (id && !deletedIds.includes(id)) deletedIds.push(id); });
-        }
-        if (apiDelRes && apiDelRes.status === 'success' && Array.isArray(apiDelRes.data)) {
-          apiDelRes.data.forEach((id: string) => { if (id && !deletedIds.includes(id)) deletedIds.push(id); });
-        }
-
-        let mergedBatches: InventoryBatch[] = (res && res.status === 'success' && Array.isArray(res.data)) ? res.data : [];
-
-        if (Array.isArray(mergedBatches)) {
-          mergedBatches.forEach(b => { if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b); });
-        }
-
-        if (Array.isArray(tenantFirestoreBatches)) {
-          tenantFirestoreBatches.forEach((b: any) => { if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b as InventoryBatch); });
-        }
-        if (Array.isArray(globalFirestoreBatches)) {
-          globalFirestoreBatches.forEach((b: any) => { if (b && b.id && !isItemDeleted(b)) batchMap.set(b.id, b as InventoryBatch); });
-        }
-
-        const finalBatches = isCleared && !cachedBatches && !customBatchesStr && batchMap.size === 0
-          ? [] 
-          : Array.from(batchMap.values()).filter(b => !isItemDeleted(b));
-
-        setBatches(finalBatches);
-        if (finalBatches.length > 0) {
-          localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(finalBatches));
-        }
-
-        if (movRes && movRes.status === 'success' && Array.isArray(movRes.data)) {
-          setMovements(movRes.data);
-        }
-      } catch (err) {
-        console.warn("Background inventory fetch notice:", err);
-      }
-    }, 50);
-  };
-
   useEffect(() => {
-    // Restore from localStorage first if available
-    const cachedBatches = localStorage.getItem(`junub_inventory_batches_${activeTenantId}`);
-    if (cachedBatches) {
-      try {
-        const parsed = JSON.parse(cachedBatches);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setBatches(parsed);
-        }
-      } catch (err) {
-        console.warn("Failed to parse local inventory cache", err);
-      }
-    }
-    fetchInventoryData();
-
-    // Subscribe to real-time Firebase Firestore batch synchronization
+    setLoading(true);
+    // Live Firestore subscription IS the data layer — no localStorage cache,
+    // no legacy REST fallbacks, no global-tenant mirror reads.
     const unsubscribeFs = subscribeToBatchesFirestore(activeTenantId, (fsBatches) => {
       setBatches((fsBatches || []) as InventoryBatch[]);
+      setLoading(false);
     });
-
-    const handleUpdate = () => fetchInventoryData();
-    window.addEventListener('junub_inventory_updated', handleUpdate);
     return () => {
       unsubscribeFs();
-      window.removeEventListener('junub_inventory_updated', handleUpdate);
     };
   }, [activeTenantId]);
 
@@ -918,18 +789,15 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
     try {
       // Save directly to Firebase Firestore live
-      saveBatchToFirestore('shared-global-tenant-v1', fallbackBatch as any)
+      saveBatchToFirestore(activeTenantId, fallbackBatch as any)
         .catch(e => console.warn("Firestore batch save notice:", e));
       saveBatchToFirestore(activeTenantId, fallbackBatch as any)
         .catch(e => console.warn("Firestore batch save notice:", e));
 
       const updated = [fallbackBatch, ...batches];
       setBatches(updated);
-      localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updated));
-      localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updated));
 
       // Dispatch event so POS and other views update instantly
-      window.dispatchEvent(new Event('junub_inventory_updated'));
 
       // Reset filters so newly registered batch appears immediately at top of list
       setSearchQuery('');
@@ -996,9 +864,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     } catch (err) {
       const updated = [fallbackBatch, ...batches];
       setBatches(updated);
-      localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updated));
-      localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updated));
-      window.dispatchEvent(new Event('junub_inventory_updated'));
       showBanner(`Registered medicine batch ${newBatchForm.name} locally in master inventory.`);
       setShowAddBatchModal(false);
     }
@@ -1046,7 +911,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
         // Standard atomic batch write
         const updatedBatchObj: InventoryBatch = { ...showAdjustModal, quantity: newQty };
         await saveBatchToFirestore(activeTenantId, updatedBatchObj as any, isOnline);
-        await saveBatchToFirestore('shared-global-tenant-v1', updatedBatchObj as any, isOnline);
       }
     } catch (err: any) {
       showBanner(`Write-off submission failed: ${err?.message || 'Atomic transaction failed'}`, "error");
@@ -1055,22 +919,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
     const updatedBatch: InventoryBatch = { ...showAdjustModal, quantity: newQty };
 
-    // Update state immediately
+    // Update state immediately — the live Firestore subscription will
+    // reconcile shortly after; no localStorage cache needed.
     const updatedBatches = batches.map(b => b.id === showAdjustModal.id ? updatedBatch : b);
     setBatches(updatedBatches);
-
-    // Save to local storage caches
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
-    const customBatchesStr = localStorage.getItem(`junub_custom_batches_${activeTenantId}`);
-    if (customBatchesStr) {
-      try {
-        const parsedCustom = JSON.parse(customBatchesStr);
-        if (Array.isArray(parsedCustom)) {
-          const updatedCustom = parsedCustom.map((b: any) => b.id === showAdjustModal.id ? updatedBatch : b);
-          localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updatedCustom));
-        }
-      } catch (e) {}
-    }
 
     // Log to HIPAA audit ledger
     logAuditEvent(
@@ -1097,10 +949,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     };
     const updatedMovements = [movementRecord, ...movements];
     setMovements(updatedMovements);
-    localStorage.setItem(`junub_inventory_movements_${activeTenantId}`, JSON.stringify(updatedMovements));
 
     // Dispatch global sync event
-    window.dispatchEvent(new Event('junub_inventory_updated'));
 
     const successMsg = adjustForm.type === 'expired'
       ? `Successfully processed Lapsed Write-off of ${Math.abs(finalQty)} units for ${showAdjustModal.name}`
@@ -1180,14 +1030,14 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     }
 
     setBatches(updatedBatches);
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
 
-    // 4. Save both batches directly to Firebase Firestore
+    // 4. Save both batches to this branch's Firestore path.
+    // Note: true cross-branch stock transfers aren't wired up separately —
+    // this component is scoped to one branch (activeTenantId) per staff
+    // assignment, so both sides of a transfer save under that same branch.
     await Promise.all([
       saveBatchToFirestore(activeTenantId, updatedSourceBatch),
-      saveBatchToFirestore('shared-global-tenant-v1', updatedSourceBatch),
-      saveBatchToFirestore(activeTenantId, updatedDestBatch),
-      saveBatchToFirestore('shared-global-tenant-v1', updatedDestBatch)
+      saveBatchToFirestore(activeTenantId, updatedDestBatch)
     ]).catch(err => console.warn("Notice saving stock transfer to Firestore:", err));
 
     // 5. Log audit trail and movements
@@ -1227,10 +1077,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
     const updatedMovements = [moveOut, moveIn, ...movements];
     setMovements(updatedMovements);
-    localStorage.setItem(`junub_inventory_movements_${activeTenantId}`, JSON.stringify(updatedMovements));
 
     // Dispatch sync event
-    window.dispatchEvent(new Event('junub_inventory_updated'));
 
     showBanner(`Transferred ${parsedQty} units of ${showTransferModal.name} to ${targetDestStoreName} successfully.`);
     setShowTransferModal(null);
@@ -1305,9 +1153,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     setScannedSkus([]);
     setSelectedCategory('All');
     if (!restrictedStoreId) setSelectedStore('All');
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
-    localStorage.setItem(`junub_custom_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
-    saveBatchToFirestore('shared-global-tenant-v1', newMasterBatch).catch(e => console.warn(e));
+    saveBatchToFirestore(activeTenantId, newMasterBatch).catch(e => console.warn(e));
     saveBatchToFirestore(activeTenantId, newMasterBatch).catch(e => console.warn(e));
 
     showBanner(`Successfully registered ${masterProductForm.name} in master database.`);
@@ -1396,7 +1242,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           manufacturer: masterProductForm.manufacturer || b.manufacturer,
           sku: masterProductForm.sku || b.sku
         };
-        saveBatchToFirestore('shared-global-tenant-v1', updatedItem).catch(e => console.warn(e));
+        saveBatchToFirestore(activeTenantId, updatedItem).catch(e => console.warn(e));
         saveBatchToFirestore(activeTenantId, updatedItem).catch(e => console.warn(e));
         return updatedItem;
       }
@@ -1404,7 +1250,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     });
 
     setBatches(updatedBatches);
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updatedBatches));
 
     showBanner(`Successfully updated ${masterProductForm.name} catalog details.`);
     
@@ -1429,7 +1274,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           ...b,
           lockedRate: usdToSspRate
         };
-        saveBatchToFirestore('shared-global-tenant-v1', newItem).catch(e => console.warn(e));
+        saveBatchToFirestore(activeTenantId, newItem).catch(e => console.warn(e));
         saveBatchToFirestore(activeTenantId, newItem).catch(e => console.warn(e));
         return newItem;
       }
@@ -1437,9 +1282,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     });
     setBatches(updated);
     try {
-      localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, JSON.stringify(updated));
-      localStorage.setItem('trust_pharmacy_inventory_batches', JSON.stringify(updated));
-      window.dispatchEvent(new Event('junub_inventory_updated'));
     } catch(e) {}
     alert(batchId ? `Item exchange rate matched to active dollar rate (1 USD = ${usdToSspRate.toLocaleString()} SSP).` : `All inventory items matched to active dollar rate (1 USD = ${usdToSspRate.toLocaleString()} SSP).`);
   };
@@ -1455,46 +1297,14 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       return;
     }
     try {
-      // 1. Immediately record deleted IDs in tenant local storage & shared global key
-      ['junub_deleted_batches_' + activeTenantId, 'junub_deleted_batches_shared-global-tenant-v1', 'trust_pharmacy_deleted_batches'].forEach(storeKey => {
-        const deletedStr = localStorage.getItem(storeKey) || '[]';
-        let deletedIds: string[] = [];
-        try { deletedIds = JSON.parse(deletedStr); } catch(e) {}
-        if (!deletedIds.includes(id)) deletedIds.push(id);
-        if (name && !deletedIds.includes(name)) deletedIds.push(name);
-        localStorage.setItem(storeKey, JSON.stringify(deletedIds));
-      });
-
-      // 2. Filter out deleted drug from state and all local inventory storage keys
+      // Delete from Firestore permanently — Firestore is the only source
+      // of truth now, no localStorage deleted-ids ledger needed.
       const updatedBatches = batches.filter(b => b.id !== id && b.drugId !== id && b.name !== name);
       setBatches(updatedBatches);
 
-      [
-        `junub_inventory_batches_${activeTenantId}`,
-        'junub_inventory_master_backup',
-        'trust_pharmacy_inventory_batches',
-        `junub_custom_batches_${activeTenantId}`
-      ].forEach(storeKey => {
-        try {
-          const raw = localStorage.getItem(storeKey);
-          if (raw) {
-            const list = JSON.parse(raw);
-            if (Array.isArray(list)) {
-              const cleaned = list.filter((b: any) => b.id !== id && b.drugId !== id && b.name !== name);
-              localStorage.setItem(storeKey, JSON.stringify(cleaned));
-            }
-          }
-        } catch(e) {}
-      });
+      await deleteBatchFromFirestore(activeTenantId, id, name);
 
-      // 3. Delete from Firestore permanently & save to cloud blacklist
-      try {
-        await deleteBatchFromFirestore(activeTenantId, id, name);
-        await deleteBatchFromFirestore('shared-global-tenant-v1', id, name);
-        await saveDeletedBatchToFirestore(activeTenantId, id, name);
-      } catch (e) {}
-
-      // 4. Send API DELETE & Sync request to backend
+      // Send API DELETE & Sync request to backend
       try {
         await fetch(`/api/v1/${activeTenantId}/inventory/${id}?name=${encodeURIComponent(name || '')}`, { method: 'DELETE' });
         await fetch(`/api/v1/${activeTenantId}/inventory/deleted-batches`, {
@@ -1503,10 +1313,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           body: JSON.stringify({ id, name, ids: [id, name].filter(Boolean) })
         });
       } catch (err) {}
-
-      // 5. Notify all components & window listeners
-      window.dispatchEvent(new Event('junub_inventory_updated'));
-      window.dispatchEvent(new Event('storage'));
 
       showBanner(`Decommissioned and deleted ${name} permanently from catalog.`);
       
@@ -1528,12 +1334,15 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
   // Erase All Inventory Data (Complete Reset)
   const handleEraseAllInventory = async () => {
-
-    localStorage.setItem(`junub_inventory_cleared_${activeTenantId}`, 'true');
-    localStorage.setItem(`junub_inventory_batches_${activeTenantId}`, '[]');
-    localStorage.setItem(`junub_custom_batches_${activeTenantId}`, '[]');
-    localStorage.setItem(`junub_deleted_batches_${activeTenantId}`, '[]');
     setBatches([]);
+    try {
+      // Actually delete every batch doc under this branch in Firestore —
+      // this is the real "erase", not just a local state reset.
+      const existing = await loadBatchesFromFirestore(activeTenantId);
+      await Promise.all(existing.map((b: any) => deleteBatchFromFirestore(activeTenantId, b.id)));
+    } catch (e) {
+      console.error('Failed to erase inventory in Firestore:', e);
+    }
 
     try {
       await fetch(`/api/v1/${activeTenantId}/inventory/clear`, { method: 'DELETE' });
@@ -1650,7 +1459,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           storeId: 'store-1',
           invoiceDate: new Date().toISOString().split('T')[0]
         });
-        fetchInventoryData();
       } else {
         showBanner("Lot ingestion failed.", "error");
       }
