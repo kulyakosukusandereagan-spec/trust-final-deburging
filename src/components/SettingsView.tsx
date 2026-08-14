@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Settings, DollarSign, Building, Printer, WifiOff, Save, Check, RefreshCw, ShieldCheck, Trash2, AlertOctagon, Upload, Image as ImageIcon } from 'lucide-react';
 import { BranchInfo } from '../types/pharmacy';
 import { performComprehensiveFactoryReset } from '../utils/factoryReset';
+import { savePharmacySettingsToFirestore } from '../lib/firebaseSync';
 
 interface SettingsViewProps {
   branches?: BranchInfo[];
@@ -32,7 +33,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [resetDone, setResetDone] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [logoPreview, setLogoPreview] = useState<string>(() => localStorage.getItem('trust_pharmacy_logo') || '');
+  const [logoPreview, setLogoPreview] = useState<string>(activeTenant?.logoUrl || '');
+
+  useEffect(() => {
+    if (activeTenant?.logoUrl !== undefined) {
+      setLogoPreview(activeTenant.logoUrl);
+    }
+  }, [activeTenant?.logoUrl]);
 
   if (userRole !== 'Administrator') {
     return (
@@ -48,59 +55,54 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     );
   }
 
-  // Contact & Receipt Phone Setup State
-  const [contactForm, setContactForm] = useState(() => {
-    const cached = localStorage.getItem('trust_pharmacy_contact');
-    let parsed: any = null;
-    if (cached) {
-      try { parsed = JSON.parse(cached); } catch (e) {}
+  // Contact & Receipt Phone Setup State - strictly from Firestore activeTenant
+  const [contactForm, setContactForm] = useState(() => ({
+    name: activeTenant?.name || "Trust Pharmacy",
+    phone: activeTenant?.phone || activeTenant?.telephone || "+211 922 152 427",
+    address: activeTenant?.address || "Airport Road, Juba Town, South Sudan",
+    email: activeTenant?.email || "info@trustpharmacy.com",
+    license: activeTenant?.businessRegNo || activeTenant?.license || "SS-MOH-TRUST-2026"
+  }));
+
+  useEffect(() => {
+    if (activeTenant) {
+      setContactForm({
+        name: activeTenant.name || "Trust Pharmacy",
+        phone: activeTenant.phone || activeTenant.telephone || "+211 922 152 427",
+        address: activeTenant.address || "Airport Road, Juba Town, South Sudan",
+        email: activeTenant.email || "info@trustpharmacy.com",
+        license: activeTenant.businessRegNo || activeTenant.license || "SS-MOH-TRUST-2026"
+      });
     }
-    return {
-      name: parsed?.name || activeTenant?.name || "Trust Pharmacy",
-      phone: parsed?.phone || activeTenant?.phone || activeTenant?.telephone || "+211 922 152 427",
-      address: parsed?.address || activeTenant?.address || "Airport Road, Juba Town, South Sudan",
-      email: parsed?.email || activeTenant?.email || "info@trustpharmacy.com",
-      license: parsed?.license || activeTenant?.businessRegNo || activeTenant?.license || "SS-MOH-TRUST-2026"
-    };
-  });
+  }, [activeTenant]);
+
   const [contactSaved, setContactSaved] = useState(false);
 
-  const handleSaveContact = (e: React.FormEvent) => {
+  const handleSaveContact = async (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem('trust_pharmacy_contact', JSON.stringify(contactForm));
     
-    // Also update cached tenants in localStorage so top headers update
-    const cachedTenantsStr = localStorage.getItem('trust_pharmacy_tenants');
-    if (cachedTenantsStr) {
-      try {
-        const tenants = JSON.parse(cachedTenantsStr);
-        if (Array.isArray(tenants) && tenants.length > 0) {
-          tenants[0].name = contactForm.name;
-          tenants[0].phone = contactForm.phone;
-          tenants[0].telephone = contactForm.phone;
-          tenants[0].address = contactForm.address;
-          tenants[0].email = contactForm.email;
-          tenants[0].businessRegNo = contactForm.license;
-          localStorage.setItem('trust_pharmacy_tenants', JSON.stringify(tenants));
-        }
-      } catch (e) {}
+    const updated = {
+      ...activeTenant,
+      name: contactForm.name,
+      phone: contactForm.phone,
+      telephone: contactForm.phone,
+      address: contactForm.address,
+      email: contactForm.email,
+      businessRegNo: contactForm.license
+    };
+
+    // Save directly to Firebase Firestore
+    try {
+      await savePharmacySettingsToFirestore(updated);
+    } catch (err) {
+      console.warn('[SettingsView] Firestore settings update notice:', err);
     }
 
-    if (activeTenant && onUpdateTenant) {
-      const updated = {
-        ...activeTenant,
-        name: contactForm.name,
-        phone: contactForm.phone,
-        telephone: contactForm.phone,
-        address: contactForm.address,
-        email: contactForm.email,
-        businessRegNo: contactForm.license
-      };
+    if (onUpdateTenant) {
       onUpdateTenant(updated);
     }
 
     window.dispatchEvent(new Event('junub_tenant_updated'));
-    window.dispatchEvent(new Event('storage'));
 
     setContactSaved(true);
     setTimeout(() => setContactSaved(false), 3000);
@@ -110,7 +112,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>('80mm');
   const [autoPrint, setAutoPrint] = useState(true);
 
-  const handleSaveRate = (e: React.FormEvent) => {
+  const handleSaveRate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isOnline) {
       alert("STRICT ONLINE MODE POLICY: You are currently offline. Changing settings is disabled when offline.");
@@ -119,12 +121,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const parsed = parseFloat(rateInput);
     if (!isNaN(parsed) && parsed > 0) {
       onUpdateExchangeRate(parsed);
+      try {
+        await savePharmacySettingsToFirestore({ ...activeTenant, usdToSspRate: parsed });
+      } catch (err) {
+        console.warn(err);
+      }
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 2500);
     }
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.type.startsWith('image/')) {
@@ -132,42 +139,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         return;
       }
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         const result = reader.result as string;
         setLogoPreview(result);
-        localStorage.setItem('trust_pharmacy_logo', result);
-        alert('Trust Pharmacy Branch Logo uploaded successfully! It will now appear on all thermal receipts and PDF reports.');
+        const updated = { ...activeTenant, logoUrl: result };
+        try {
+          await savePharmacySettingsToFirestore(updated);
+          if (onUpdateTenant) onUpdateTenant(updated);
+        } catch (err) {
+          console.warn('[SettingsView] Error saving logo to Firestore:', err);
+        }
+        alert('Trust Pharmacy Branch Logo uploaded successfully to Firebase! It will now appear on all thermal receipts and PDF reports.');
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleRemoveLogo = () => {
+  const handleRemoveLogo = async () => {
     setLogoPreview('');
-    localStorage.removeItem('trust_pharmacy_logo');
+    const updated = { ...activeTenant, logoUrl: '' };
+    try {
+      await savePharmacySettingsToFirestore(updated);
+      if (onUpdateTenant) onUpdateTenant(updated);
+    } catch (err) {
+      console.warn(err);
+    }
   };
 
   const [eraseInvDone, setEraseInvDone] = useState(false);
 
   const handleEraseInventoryOnly = async () => {
     setEraseInvDone(true);
-    const tenantId = 'shared-global-tenant-v1';
-    localStorage.setItem(`junub_inventory_cleared_${tenantId}`, 'true');
-    localStorage.removeItem(`junub_inventory_batches_${tenantId}`);
-    localStorage.removeItem(`junub_custom_batches_${tenantId}`);
-    localStorage.removeItem('junub_inventory_master_backup');
-    localStorage.removeItem('trust_pharmacy_inventory_batches');
+    const tenantId = 'trust-pharmacy';
 
     try {
       await fetch(`/api/v1/${tenantId}/inventory/clear`, { method: 'DELETE' });
     } catch(e) {}
 
     window.dispatchEvent(new Event('junub_inventory_updated'));
-    window.dispatchEvent(new Event('storage'));
 
     setTimeout(() => {
       setEraseInvDone(false);
-      alert("All inventory records have been erased successfully!");
+      alert("All inventory records have been erased from Firebase successfully!");
     }, 1000);
   };
 

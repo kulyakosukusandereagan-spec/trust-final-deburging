@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { auth, createStaffInFirebaseAuth } from '../lib/firebase';
-import { loadDeletedStaffFromFirestore, deleteStaffAccountFromFirestore } from '../lib/firebaseSync';
+import { 
+  deleteStaffAccountFromFirestore, 
+  saveBranchToFirestore, 
+  saveStaffAccountToFirestore 
+} from '../lib/firebaseSync';
 import { 
   Plus, 
   MapPin, 
@@ -29,7 +33,7 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
   const [activeSubTab, setActiveSubTab] = useState<'branches' | 'staff'>('branches');
   
   const activeUserEmail = (userEmail || auth?.currentUser?.email || '').toLowerCase();
-  const isMasterAdmin = activeUserEmail === 'junubposcenter@gmail.com';
+  const isMasterAdmin = activeUserEmail === 'junubposcenter@gmail.com' || activeRole === 'Super Admin' || activeRole === 'Administrator';
   
   // Modals state
   const [showBranchModal, setShowBranchModal] = useState(false);
@@ -50,80 +54,24 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
   const [staffBranchId, setStaffBranchId] = useState('');
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
 
-  const [deletedStaffTick, setDeletedStaffTick] = useState(0);
-
-  useEffect(() => {
-    let isMounted = true;
-    async function syncDeletedStaff() {
-      try {
-        const uidToUse = auth?.currentUser?.uid || tenant.id || 'shared-global-tenant-v1';
-        const [fsDeleted, apiDelRes] = await Promise.all([
-          loadDeletedStaffFromFirestore(uidToUse),
-          fetch(`/api/v1/${tenant.id}/staff/deleted`).then(r => r.ok ? r.json() : null).catch(() => null)
-        ]);
-
-        let delIds = fsDeleted.ids || [];
-        let delEmails = fsDeleted.emails || [];
-
-        if (apiDelRes && apiDelRes.status === 'success' && apiDelRes.data) {
-          if (Array.isArray(apiDelRes.data.ids)) {
-            apiDelRes.data.ids.forEach((id: string) => { if (id && !delIds.includes(id)) delIds.push(id); });
-          }
-          if (Array.isArray(apiDelRes.data.emails)) {
-            apiDelRes.data.emails.forEach((e: string) => { if (e && !delEmails.includes(e.toLowerCase())) delEmails.push(e.toLowerCase()); });
-          }
-        }
-
-        localStorage.setItem('junub_deleted_staff_ids', JSON.stringify(delIds));
-        localStorage.setItem('junub_deleted_staff_emails', JSON.stringify(delEmails));
-        if (isMounted) setDeletedStaffTick(t => t + 1);
-      } catch(e) {}
-    }
-    syncDeletedStaff();
-
-    const handleStaffOrBranchUpdate = () => {
-      if (isMounted) setDeletedStaffTick(t => t + 1);
-    };
-    window.addEventListener('junub_staff_updated', handleStaffOrBranchUpdate);
-    window.addEventListener('junub_branch_updated', handleStaffOrBranchUpdate);
-
-    return () => { 
-      isMounted = false; 
-      window.removeEventListener('junub_staff_updated', handleStaffOrBranchUpdate);
-      window.removeEventListener('junub_branch_updated', handleStaffOrBranchUpdate);
-    };
-  }, [tenant.id]);
-
   const branches = React.useMemo(() => {
-    let delBranchIds: string[] = [];
-    try {
-      delBranchIds = JSON.parse(localStorage.getItem('junub_deleted_branch_ids') || '[]');
-    } catch (e) {}
-    return (tenant.branches || []).filter(b => b && b.id && !delBranchIds.includes(b.id));
-  }, [tenant.branches, deletedStaffTick]);
+    return (tenant.branches || []).filter(b => b && b.id);
+  }, [tenant.branches]);
 
   const staff = React.useMemo(() => {
     const staffMap = new Map<string, Staff>();
 
-    // 100% Live Firestore Staff accounts
+    // 100% Live Firestore Staff accounts deduplicated by email
     (tenant.staff || []).forEach(s => {
-      if (s.email) staffMap.set(s.email.toLowerCase(), s);
-      else if (s.id) staffMap.set(s.id, s);
+      if (!s || s.deletedAt) return;
+      const key = s.email ? s.email.toLowerCase().trim() : s.id;
+      if (key && !staffMap.has(key)) {
+        staffMap.set(key, s);
+      }
     });
 
-    let delIds: string[] = [];
-    let delEmails: string[] = [];
-    try {
-      delIds = JSON.parse(localStorage.getItem('junub_deleted_staff_ids') || '[]');
-      delEmails = JSON.parse(localStorage.getItem('junub_deleted_staff_emails') || '[]');
-    } catch (e) {}
-
-    return Array.from(staffMap.values()).filter(s => 
-      !s.deletedAt && 
-      !delIds.includes(s.id) && 
-      !delEmails.includes(s.email?.toLowerCase())
-    );
-  }, [tenant.staff, branches, deletedStaffTick]);
+    return Array.from(staffMap.values());
+  }, [tenant.staff]);
 
   const handleStartEditStaff = (member: Staff) => {
     setEditingStaff(member);
@@ -165,52 +113,12 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     onUpdateTenant(updatedTenant);
 
     // Save directly to Firestore staff collection
-    import('../lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-      saveStaffAccountToFirestore(updatedMember.branchId || 'main', updatedMember)
-        .catch(err => console.warn("Notice saving updated staff to Firestore:", err));
-    });
+    saveStaffAccountToFirestore(updatedMember.branchId || 'main-branch', updatedMember)
+      .catch(err => console.warn("Notice saving updated staff to Firestore:", err));
 
     // Ensure staff exists in Firebase Authentication
     createStaffInFirebaseAuth(updatedMember.email, updatedMember.password || 'Staff123!')
       .catch(err => console.warn("Notice updating user in Firebase Auth:", err));
-
-    // Update active user session if the edited staff is currently logged in
-    try {
-      const activeSessionStr = localStorage.getItem('junub_pharmacy_user_session');
-      if (activeSessionStr) {
-        const activeSession = JSON.parse(activeSessionStr);
-        if (activeSession.email?.toLowerCase() === updatedMember.email.toLowerCase()) {
-          const updatedSession = { ...activeSession, role: updatedMember.role, name: updatedMember.name };
-          localStorage.setItem('junub_pharmacy_user_session', JSON.stringify(updatedSession));
-        }
-      }
-    } catch (e) {}
-
-    // Update in local registered staff store
-    try {
-      const existingRegistered = JSON.parse(localStorage.getItem('junub_registered_staff') || '[]');
-      const filtered = existingRegistered.filter((s: any) => s.id !== updatedMember.id && s.email?.toLowerCase() !== updatedMember.email.toLowerCase());
-      localStorage.setItem('junub_registered_staff', JSON.stringify([...filtered, updatedMember]));
-      window.dispatchEvent(new Event('junub_staff_updated'));
-    } catch(e) {}
-
-    // Send to backend server API & Server API Gateway Proxy
-    fetch(`/api/v1/tenants/${tenant.id}/staff`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedMember)
-    }).catch(err => console.warn("Notice syncing updated staff to backend:", err));
-
-    fetch('/api/staff/update-role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        staffId: updatedMember.id,
-        tenantId: tenant.id,
-        newRole: updatedMember.role,
-        updatedBy: auth?.currentUser?.email || 'admin'
-      })
-    }).catch(err => console.warn("Notice updating role via API Gateway:", err));
 
     closeStaffModal();
   };
@@ -240,9 +148,16 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     e.preventDefault();
     if (!editingBranch || !branchName.trim()) return;
 
+    const updatedBranchData = {
+      ...editingBranch,
+      name: branchName,
+      address: branchAddress || 'N/A',
+      phone: branchPhone || 'N/A'
+    };
+
     const updatedBranches = branches.map(b => 
       b.id === editingBranch.id 
-        ? { ...b, name: branchName, address: branchAddress || 'N/A', phone: branchPhone || 'N/A' }
+        ? updatedBranchData
         : b
     );
 
@@ -250,6 +165,10 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       ...tenant,
       branches: updatedBranches
     });
+
+    // Save branch directly to Firestore
+    saveBranchToFirestore(editingBranch.id, updatedBranchData)
+      .catch(err => console.error("Error saving branch to Firestore:", err));
 
     closeBranchModal();
   };
@@ -365,24 +284,8 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     onUpdateTenant(updatedTenant);
 
     // Save directly to Firestore staff collection online so staff can log in from any device instantly
-    import('../lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-      saveStaffAccountToFirestore(newStaff.branchId || 'main-branch', newStaff)
-        .catch(err => console.warn("Notice saving staff to Firestore:", err));
-    });
-
-    // Save to master standalone local registered staff store
-    try {
-      const existingRegistered = JSON.parse(localStorage.getItem('junub_registered_staff') || '[]');
-      const filtered = existingRegistered.filter((s: any) => s.email?.toLowerCase() !== newStaff.email.toLowerCase());
-      localStorage.setItem('junub_registered_staff', JSON.stringify([...filtered, newStaff]));
-    } catch(e) {}
-
-    // Send to backend server API
-    fetch(`/api/v1/tenants/${tenant.id}/staff`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newStaff)
-    }).catch(err => console.warn("Notice syncing staff to backend:", err));
+    saveStaffAccountToFirestore(newStaff.branchId || 'main-branch', newStaff)
+      .catch(err => console.warn("Notice saving staff to Firestore:", err));
 
     // Register user in Firebase Authentication safely via Secondary Auth instance
     createStaffInFirebaseAuth(cleanEmail, staffPassword || 'Staff123!')
@@ -406,6 +309,11 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       ...tenant,
       branches: updatedBranches
     });
+
+    const target = updatedBranches.find(b => b.id === branchId);
+    if (target) {
+      saveBranchToFirestore(branchId, target).catch(err => console.warn(err));
+    }
   };
 
   // Verify staff member
@@ -418,6 +326,11 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       ...tenant,
       staff: updatedStaff
     });
+
+    const target = updatedStaff.find(s => s.id === staffId);
+    if (target) {
+      saveStaffAccountToFirestore(target.branchId || 'main-branch', target).catch(err => console.warn(err));
+    }
   };
 
   // Toggle staff active state
@@ -430,33 +343,27 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       ...tenant,
       staff: updatedStaff
     });
+
+    const target = updatedStaff.find(s => s.id === staffId);
+    if (target) {
+      saveStaffAccountToFirestore(target.branchId || 'main-branch', target).catch(err => console.warn(err));
+    }
   };
 
-  // Permanently remove branch clinic
+  // Deactivate or remove branch
   const handleRemoveBranch = (branchId: string) => {
     const targetBranch = branches.find(b => b.id === branchId);
-    if (window.confirm(`Are you sure you want to permanently delete "${targetBranch?.name || 'this branch'}"? Once deleted, it will never appear anywhere.`)) {
-      try {
-        const delBranchIds = JSON.parse(localStorage.getItem('junub_deleted_branch_ids') || '[]');
-        if (branchId && !delBranchIds.includes(branchId)) delBranchIds.push(branchId);
-        localStorage.setItem('junub_deleted_branch_ids', JSON.stringify(delBranchIds));
-        window.dispatchEvent(new Event('junub_branch_updated'));
-      } catch(e) {}
-
-      const updatedBranches = branches.filter(b => b.id !== branchId);
+    if (window.confirm(`Are you sure you want to deactivate branch "${targetBranch?.name || 'this branch'}"?`)) {
+      const updatedBranches = branches.map(b => b.id === branchId ? { ...b, isActive: false } : b);
       const updatedTenant: Tenant = {
         ...tenant,
-        activePharmacies: Math.max(0, (tenant.activePharmacies || 1) - 1),
         branches: updatedBranches
       };
-
       onUpdateTenant(updatedTenant);
-
-      const uidToUse = auth?.currentUser?.uid || 'shared-global-tenant-v1';
-      import('../lib/firebaseSync').then(({ saveDeletedBranchToFirestore, saveTenantToFirestore }) => {
-        saveDeletedBranchToFirestore(uidToUse, branchId).catch(err => console.warn(err));
-        saveTenantToFirestore(uidToUse, updatedTenant).catch(err => console.warn(err));
-      });
+      const target = updatedBranches.find(b => b.id === branchId);
+      if (target) {
+        saveBranchToFirestore(branchId, target).catch(err => console.warn(err));
+      }
     }
   };
 
@@ -465,28 +372,6 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     const removedMember = staff.find(s => s.id === staffId);
     if (window.confirm(`Are you sure you want to permanently delete staff account "${removedMember?.name || removedMember?.email || 'this staff member'}"? Once deleted, it will never appear anywhere.`)) {
       const updatedStaff = staff.filter(s => s.id !== staffId && s.email?.toLowerCase() !== removedMember?.email?.toLowerCase());
-      
-      // Save to global deleted staff blacklist in localStorage so deleted staff NEVER reappears
-      try {
-        const delIds = JSON.parse(localStorage.getItem('junub_deleted_staff_ids') || '[]');
-        const delEmails = JSON.parse(localStorage.getItem('junub_deleted_staff_emails') || '[]');
-
-        if (staffId && !delIds.includes(staffId)) delIds.push(staffId);
-        if (removedMember?.id && !delIds.includes(removedMember.id)) delIds.push(removedMember.id);
-        if (removedMember?.email && !delEmails.includes(removedMember.email.toLowerCase())) {
-          delEmails.push(removedMember.email.toLowerCase());
-        }
-
-        localStorage.setItem('junub_deleted_staff_ids', JSON.stringify(delIds));
-        localStorage.setItem('junub_deleted_staff_emails', JSON.stringify(delEmails));
-
-        const existingRegistered = JSON.parse(localStorage.getItem('junub_registered_staff') || '[]');
-        const filtered = existingRegistered.filter((s: any) => 
-          s.id !== staffId && s.email?.toLowerCase() !== removedMember?.email?.toLowerCase()
-        );
-        localStorage.setItem('junub_registered_staff', JSON.stringify(filtered));
-        window.dispatchEvent(new Event('junub_staff_updated'));
-      } catch(e) {}
 
       const updatedTenant: Tenant = {
         ...tenant,
@@ -496,11 +381,8 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
 
       onUpdateTenant(updatedTenant);
 
-      const uidToUse = auth?.currentUser?.uid || 'shared-global-tenant-v1';
-      import('../lib/firebaseSync').then(({ deleteStaffAccountFromFirestore }) => {
-        deleteStaffAccountFromFirestore(uidToUse, staffId, removedMember?.email)
-          .catch(err => console.warn("Notice deleting staff from Firestore:", err));
-      });
+      deleteStaffAccountFromFirestore(removedMember?.branchId || 'main-branch', staffId, removedMember?.email)
+        .catch(err => console.warn("Notice deleting staff from Firestore:", err));
     }
   };
 

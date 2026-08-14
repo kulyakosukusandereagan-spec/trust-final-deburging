@@ -5,7 +5,14 @@ import {
   ChevronRight, Search, CheckCircle2, Coins, ArrowUpRight, ChevronDown,
   UserCheck, CreditCard, Plus, Clock, Filter, Printer, X, Eye, Pill, ShoppingBag, Building2, Trash2
 } from 'lucide-react';
-import { loadTransactionsFromFirestore, loadStaffFromFirestore, subscribeToTransactionsFirestore } from '../lib/firebaseSync';
+import { 
+  loadTransactionsFromFirestore, 
+  loadStaffFromFirestore, 
+  subscribeToTransactionsFirestore,
+  subscribeToBatchesFirestore,
+  subscribeToExpendituresFirestore,
+  subscribeToStaffFirestore
+} from '../lib/firebaseSync';
 import { getTransactionTotal, getTransactionProfit, getTransactionCost } from '../utils/financialCalculations';
 import { executePrintHtml } from '../utils/printHelper';
 
@@ -83,7 +90,6 @@ export default function AdvancedReports({
   // Branch Matching Helper
   const isBranchMatch = useCallback((itemBranchId?: string, itemBranchName?: string, targetBranchId?: string) => {
     if (!targetBranchId || targetBranchId === 'all' || targetBranchId === 'All') return true;
-    if (!itemBranchId && !itemBranchName) return true;
     if (itemBranchId === targetBranchId) return true;
 
     const targetBranch = branches.find((b: any) => b.id === targetBranchId);
@@ -93,10 +99,14 @@ export default function AdvancedReports({
     }
 
     const targetIndex = branches.findIndex((b: any) => b.id === targetBranchId);
-    if (targetBranchId === `store-${targetIndex + 1}` && (itemBranchId === targetBranch?.id || itemBranchName === targetBranch?.name)) {
-      return true;
+    if (targetIndex !== -1) {
+      const legacyStoreId = `store-${targetIndex + 1}`;
+      const legacyBranchId = `branch-juba-${targetIndex + 1}`;
+      if (itemBranchId === legacyStoreId || itemBranchId === legacyBranchId) return true;
     }
-    if (targetBranch && itemBranchId === `store-${targetIndex + 1}`) {
+
+    // If an item lacks branch tags, match only the main branch (first branch)
+    if (branches[0] && branches[0].id === targetBranchId && !itemBranchId && !itemBranchName) {
       return true;
     }
 
@@ -143,9 +153,31 @@ export default function AdvancedReports({
     );
   }, [activeRole, userEmail, activeTenant]);
 
-  const isReset = typeof window !== 'undefined' && (
-    localStorage.getItem('trust_pharmacy_factory_reset') === 'true'
-  );
+  const [unitSalesLogs, setUnitSalesLogs] = useState<UnitSaleEntry[]>([]);
+  const [firestoreStaffList, setFirestoreStaffList] = useState<any[]>([]);
+  const [liveBatches, setLiveBatches] = useState<any[]>([]);
+  const [liveExpenditures, setLiveExpenditures] = useState<any[]>([]);
+
+  // Real-time Firestore subscriptions for staff, batches, expenditures, and transactions
+  useEffect(() => {
+    const unsubStaff = subscribeToStaffFirestore((staff) => {
+      setFirestoreStaffList(staff || []);
+    });
+
+    const unsubBatches = subscribeToBatchesFirestore((batches) => {
+      setLiveBatches(batches || []);
+    });
+
+    const unsubExp = subscribeToExpendituresFirestore((exp) => {
+      setLiveExpenditures(exp || []);
+    });
+
+    return () => {
+      unsubStaff();
+      unsubBatches();
+      unsubExp();
+    };
+  }, [activeTenantId]);
 
   // Handler when user clicks "Erase Command Reports" button
   const handleEraseClick = () => {
@@ -158,32 +190,8 @@ export default function AdvancedReports({
 
   // Action: Erase all pharmacy command report sales, recent sales, and reset dashboard figures
   const executeEraseCommandReports = async () => {
-    localStorage.setItem('junub_system_erased', 'true');
-    localStorage.setItem(`junub_reports_cleared_${activeTenantId}`, 'true');
-    localStorage.setItem('junub_reports_cleared_shared-global-tenant-v1', 'true');
-
-    const keysToClear = [
-      `junub_transactions_${activeTenantId}`,
-      'trust_pharmacy_sales',
-      'junub_transactions_shared-global-tenant-v1',
-      `jubu_offline_queue_${activeTenantId}`,
-      'jubu_offline_queue_shared-global-tenant-v1',
-      `junub_recovered_debts_${activeTenantId}`,
-      'junub_recovered_debts',
-      `junub_debit_ledger_${activeTenantId}`,
-      'junub_debit_ledger',
-      'junub_expenditures',
-      'junub_unit_sales_logs',
-      'junub_daily_sales'
-    ];
-
-    keysToClear.forEach(k => {
-      try { localStorage.removeItem(k); } catch(e){}
-    });
-
     try {
       await fetch(`/api/v1/${activeTenantId}/transactions`, { method: 'DELETE' });
-      await fetch(`/api/v1/shared-global-tenant-v1/transactions`, { method: 'DELETE' });
     } catch (e) {}
 
     setDailySalesItems([]);
@@ -196,231 +204,127 @@ export default function AdvancedReports({
     window.dispatchEvent(new Event('junub_transaction_added'));
     window.dispatchEvent(new Event('junub_system_reset'));
     window.dispatchEvent(new Event('junub_inventory_updated'));
-    window.dispatchEvent(new Event('storage'));
   };
 
-  // Unit sales transaction log store (when each unit/units was sold)
-  const [unitSalesLogs, setUnitSalesLogs] = useState<UnitSaleEntry[]>([]);
-  const [firestoreStaffList, setFirestoreStaffList] = useState<any[]>([]);
-
-  // Load Firestore staff
+  // Fetch and subscribe to real transactions directly from Firestore
   useEffect(() => {
-    async function loadStaff() {
-      try {
-        const [tenantStaff, globalStaff] = await Promise.all([
-          loadStaffFromFirestore(activeTenantId).catch(() => []),
-          loadStaffFromFirestore('shared-global-tenant-v1').catch(() => [])
-        ]);
-        const combined = [...(tenantStaff || []), ...(globalStaff || [])];
-        if (combined.length > 0) {
-          setFirestoreStaffList(combined);
-        }
-      } catch (e) {}
-    }
-    loadStaff();
+    const unsubTx = subscribeToTransactionsFirestore((transactions) => {
+      const mergedTxList = Array.isArray(transactions) ? transactions : [];
+      const newSalesItems: any[] = [];
+      const newUnitLogs: UnitSaleEntry[] = [];
 
-    const handleStaffUpdate = () => loadStaff();
-    window.addEventListener('junub_staff_updated', handleStaffUpdate);
-    window.addEventListener('storage', handleStaffUpdate);
-    return () => {
-      window.removeEventListener('junub_staff_updated', handleStaffUpdate);
-      window.removeEventListener('storage', handleStaffUpdate);
-    };
-  }, [activeTenantId]);
-
-  // Fetch real transactions from server, Firestore, and local storage
-  useEffect(() => {
-    if (isReset) {
-      setUnitSalesLogs([]);
-      setRecoveredDebts([]);
-      setDebitLedger([]);
-      setDailySalesItems([]);
-      return;
-    }
-    let isMounted = true;
-    async function fetchLiveTx() {
-      try {
-        let serverTxList: any[] = [];
-        try {
-          const res = await fetch(`/api/v1/${activeTenantId}/transactions`);
-          if (res.ok) {
-            const data = await res.json();
-            serverTxList = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      mergedTxList.forEach((tx: any) => {
+        const cashierEmail = tx.cashierEmail || tx.staffEmail || 'junubposcenter@gmail.com';
+        const cashierName = tx.cashierName || tx.staffName || cashierEmail.split('@')[0] || 'Administrator';
+        
+        const rawItems = (Array.isArray(tx.items) && tx.items.length > 0) ? tx.items : [
+          {
+            name: tx.notes || `Receipt #${tx.invoiceNumber || tx.id || 'Checkout'}`,
+            price: getTransactionTotal(tx),
+            quantity: 1,
+            cost: getTransactionCost(tx),
+            pricingType: tx.pricingType || 'Retail'
           }
-        } catch (err) {}
+        ];
 
-        let firestoreTxList: any[] = [];
-        try {
-          firestoreTxList = await loadTransactionsFromFirestore(activeTenantId);
-        } catch (e) {}
+        rawItems.forEach((it: any, idx: number) => {
+          const itemPrice = typeof it.price === 'number' ? it.price : (typeof it.unitPriceUsd === 'number' ? it.unitPriceUsd : (getTransactionTotal(tx) / (it.quantity || 1)));
+          const itemQty = it.quantity || it.unitsSold || 1;
+          const itemCost = it.cost || (itemPrice * 0.7);
 
-        // Merge with local storage transactions
-        const txMap = new Map();
-        serverTxList.forEach((tx: any) => {
-          const k = tx.id || tx.invoiceNumber;
-          if (k) txMap.set(k, tx);
-        });
-
-        firestoreTxList.forEach((tx: any) => {
-          const k = tx.id || tx.invoiceNumber;
-          if (k && !txMap.has(k)) txMap.set(k, tx);
-        });
-
-        [
-          `junub_transactions_${activeTenantId}`, 
-          'trust_pharmacy_sales',
-          'junub_transactions_shared-global-tenant-v1',
-          `jubu_offline_queue_${activeTenantId}`,
-          'jubu_offline_queue_shared-global-tenant-v1'
-        ].forEach(storeKey => {
-          try {
-            const cachedStr = localStorage.getItem(storeKey);
-            if (cachedStr) {
-              const cachedTx = JSON.parse(cachedStr);
-              if (Array.isArray(cachedTx)) {
-                cachedTx.forEach((tx: any) => {
-                  const k = tx.id || tx.invoiceNumber;
-                  if (k) {
-                    txMap.set(k, tx); // Local/recent checkout takes precedence for live accuracy
-                  }
-                });
-              }
-            }
-          } catch(e) {}
-        });
-
-        const mergedTxList = Array.from(txMap.values());
-        if (mergedTxList.length > 0) {
-          try {
-            localStorage.setItem(`junub_transactions_${activeTenantId}`, JSON.stringify(mergedTxList));
-            localStorage.setItem('trust_pharmacy_sales', JSON.stringify(mergedTxList));
-          } catch(e) {}
-        }
-
-        if (isMounted) {
-          const newSalesItems: any[] = [];
-          const newUnitLogs: UnitSaleEntry[] = [];
-          mergedTxList.forEach((tx: any) => {
-            const cashierEmail = tx.cashierEmail || tx.staffEmail || 'junubposcenter@gmail.com';
-            const cashierName = tx.cashierName || tx.staffName || cashierEmail.split('@')[0] || 'Administrator';
-            
-            const rawItems = (Array.isArray(tx.items) && tx.items.length > 0) ? tx.items : [
-              {
-                name: tx.notes || `Receipt #${tx.invoiceNumber || tx.id || 'Checkout'}`,
-                price: getTransactionTotal(tx),
-                quantity: 1,
-                cost: getTransactionCost(tx),
-                pricingType: tx.pricingType || 'Retail'
-              }
-            ];
-
-            rawItems.forEach((it: any, idx: number) => {
-              const itemPrice = typeof it.price === 'number' ? it.price : (typeof it.unitPriceUsd === 'number' ? it.unitPriceUsd : (getTransactionTotal(tx) / (it.quantity || 1)));
-              const itemQty = it.quantity || it.unitsSold || 1;
-              const itemCost = it.cost || (itemPrice * 0.7);
-
-              newSalesItems.push({
-                id: `SAL-LIVE-${tx.id}-${idx}`,
-                date: (tx.createdAt || tx.timestamp || new Date().toISOString()).substring(0, 10),
-                item: it.name || 'Pharmaceutical Item',
-                unitCost: itemCost,
-                unitPrice: itemPrice,
-                qtySold: itemQty,
-                totalAmount: itemPrice * itemQty,
-                pricingType: it.pricingType || (itemQty >= (it.wholesaleLimit || 10) ? 'Wholesale' : 'Retail'),
-                wholesaleLimit: it.wholesaleLimit || 10,
-                retailPrice: it.retailPrice || itemPrice,
-                status: (tx.paymentMethod && tx.paymentMethod.toLowerCase() === 'credit') ? 'Credit' : 'Cash',
-                staffName: cashierName,
-                staffEmail: cashierEmail,
-                branchId: tx.branchId || tx.storeId
-              });
-              newUnitLogs.push({
-                id: `USL-LIVE-${tx.id}-${idx}`,
-                drugName: it.name || 'Pharmaceutical Item',
-                dateTime: (tx.createdAt || tx.timestamp || new Date().toISOString()).replace('T', ' ').substring(0, 19),
-                unitsSold: itemQty,
-                unitPriceUsd: itemPrice,
-                totalAmountUsd: itemPrice * itemQty,
-                batchNumber: tx.invoiceNumber || `LOT-${tx.id}`,
-                receiptNo: tx.invoiceNumber || `INV-${tx.id}`,
-                customerName: tx.customerName || 'Walk-in Patient',
-                staffName: cashierName,
-                paymentMethod: tx.paymentMethod || 'Cash',
-                status: (tx.paymentMethod && tx.paymentMethod.toLowerCase() === 'credit') ? 'Credit' : 'Cash',
-                branchId: tx.branchId || tx.storeId
-              });
-            });
+          newSalesItems.push({
+            id: `${tx.id || tx.invoiceNumber}-item-${idx}`,
+            invoiceNumber: tx.invoiceNumber || `TX-${tx.id?.substring(0, 6) || 'LIVE'}`,
+            dateTime: tx.timestamp || tx.createdAt || new Date().toISOString(),
+            cashierName,
+            cashierEmail,
+            drugName: it.name || it.drugName || 'Pharmaceutical Item',
+            quantitySold: itemQty,
+            unitPriceUsd: itemPrice,
+            totalAmount: itemPrice * itemQty,
+            totalProfit: (itemPrice - itemCost) * itemQty,
+            paymentMethod: tx.paymentMethod || 'Cash',
+            status: tx.status === 'Credit' || tx.status === 'Unpaid' ? 'Credit' : (tx.paymentMethod === 'm-GURUSH' ? 'm-GURUSH' : 'Cash'),
+            pricingType: it.pricingType || tx.pricingType || 'Retail',
+            batchNumber: it.batchNumber || it.batchNo || 'LOT-2026-A',
+            notes: it.notes || tx.notes || '',
+            branchId: tx.branchId || tx.storeId,
+            storeId: tx.storeId || tx.branchId,
+            branchName: tx.branchName || tx.storeName,
+            storeName: tx.storeName || tx.branchName
           });
-          if (newSalesItems.length > 0) setDailySalesItems(newSalesItems);
-          if (newUnitLogs.length > 0) setUnitSalesLogs(newUnitLogs);
 
-          const liveDebits: any[] = [];
-          mergedTxList.forEach((tx: any) => {
-            if (tx.paymentMethod && tx.paymentMethod.toLowerCase() === 'credit') {
-              liveDebits.push({
-                id: tx.invoiceNumber || `DEBT-${tx.id}`,
-                customerName: tx.customerName || 'Credit Patient',
-                residency: tx.customerResidency || tx.customerAddress || 'Juba Town',
-                phone: tx.customerPhone || tx.phone || '+211 922 000 000',
-                items: Array.isArray(tx.items) ? tx.items.map((i: any) => `${i.name} (x${i.quantity || 1})`).join(', ') : (tx.notes || 'Medication Checkout'),
-                totalDebtUsd: getTransactionTotal(tx),
-                createdAt: (tx.createdAt || tx.timestamp || new Date().toISOString()).substring(0, 10)
-              });
-            }
+          newUnitLogs.push({
+            id: `${tx.id || tx.invoiceNumber}-unit-${idx}`,
+            drugName: it.name || it.drugName || 'Pharmaceutical Item',
+            dateTime: tx.timestamp || tx.createdAt || new Date().toISOString(),
+            unitsSold: itemQty,
+            unitPriceUsd: itemPrice,
+            totalAmountUsd: itemPrice * itemQty,
+            batchNumber: it.batchNumber || it.batchNo || 'LOT-2026-A',
+            receiptNo: tx.invoiceNumber || `TX-${tx.id?.substring(0, 6) || 'LIVE'}`,
+            customerName: tx.customerName || 'Walk-in Client',
+            staffName: cashierName,
+            paymentMethod: tx.paymentMethod || 'Cash',
+            status: tx.status === 'Credit' || tx.status === 'Unpaid' ? 'Credit' : 'Cash',
+            branchId: tx.branchId || tx.storeId,
+            storeId: tx.storeId || tx.branchId
           });
-          if (liveDebits.length > 0) {
-            setDebitLedger(prev => {
-              const map = new Map();
-              prev.forEach(d => map.set(d.id, d));
-              liveDebits.forEach(ld => map.set(ld.id, ld));
-              return Array.from(map.values());
-            });
-          }
-        } else if (isMounted && mergedTxList.length === 0) {
-          setDailySalesItems([]);
-          setUnitSalesLogs([]);
-          setDebitLedger([]);
+        });
+      });
+
+      newSalesItems.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+      newUnitLogs.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+
+      setDailySalesItems(newSalesItems);
+      setUnitSalesLogs(newUnitLogs);
+
+      const debts: any[] = [];
+      const recovered: RecoveredDebt[] = [];
+
+      mergedTxList.forEach((tx: any) => {
+        if (tx.status === 'Credit' || tx.status === 'Unpaid' || tx.paymentMethod === 'Credit') {
+          debts.push({
+            id: tx.id || tx.invoiceNumber,
+            invoiceNumber: tx.invoiceNumber || `INV-${tx.id?.substring(0,6)}`,
+            customerName: tx.customerName || 'Walk-in Patient',
+            phone: tx.customerPhone || '+211 920 000 000',
+            originalAmountUsd: getTransactionTotal(tx),
+            remainingAmountUsd: getTransactionTotal(tx),
+            issuedAt: tx.timestamp || tx.createdAt || new Date().toISOString(),
+            dueDate: tx.dueDate || new Date(Date.now() + 30*86400000).toISOString(),
+            status: 'Outstanding',
+            branchId: tx.branchId || tx.storeId,
+            storeId: tx.storeId || tx.branchId,
+            branchName: tx.branchName || tx.storeName,
+            storeName: tx.storeName || tx.branchName
+          });
+        } else if (tx.status === 'Recovered' || tx.isDebtRecovery) {
+          recovered.push({
+            id: tx.id || `REC-${Math.random().toString(36).substring(2, 7)}`,
+            customerName: tx.customerName || 'Walk-in Patient',
+            phone: tx.customerPhone || '+211 920 000 000',
+            amountPaidUsd: getTransactionTotal(tx),
+            clearedAt: tx.timestamp || tx.createdAt || new Date().toISOString(),
+            clearedBy: tx.cashierName || tx.staffName || 'Administrator',
+            branchId: tx.branchId || tx.storeId,
+            storeId: tx.storeId || tx.branchId,
+            branchName: tx.branchName || tx.storeName,
+            storeName: tx.storeName || tx.branchName
+          });
         }
-      } catch (err) {
-        console.warn("Could not fetch live report transactions", err);
-      }
-    }
+      });
 
-    fetchLiveTx();
-
-    const unsubTx = subscribeToTransactionsFirestore(activeTenantId, () => {
-      if (isMounted) fetchLiveTx();
+      setDebitLedger(debts);
+      setRecoveredDebts(recovered);
     });
 
-    const handleTxUpdate = () => {
-      fetchLiveTx();
-    };
+    return () => unsubTx();
+  }, [activeTenantId]);
 
-    window.addEventListener('junub_transaction_added', handleTxUpdate);
-    window.addEventListener('junub_inventory_updated', handleTxUpdate);
-    window.addEventListener('junub_tenant_updated', handleTxUpdate);
-    window.addEventListener('storage', handleTxUpdate);
-
-    return () => {
-      isMounted = false;
-      unsubTx();
-      window.removeEventListener('junub_transaction_added', handleTxUpdate);
-      window.removeEventListener('junub_inventory_updated', handleTxUpdate);
-      window.removeEventListener('junub_tenant_updated', handleTxUpdate);
-      window.removeEventListener('storage', handleTxUpdate);
-    };
-  }, [activeTenantId, isReset]);
-
-  // Expiry Risk Report array computed safely
+  // Expiry Risk Report array computed safely from live Firestore batches
   const expiryRiskReport = useMemo(() => {
-    if (isReset) return [];
-    let loadedBatches: any[] = [];
-    try {
-      const bStr = localStorage.getItem(`junub_inventory_batches_${activeTenantId}`) || localStorage.getItem('trust_pharmacy_inventory_batches');
-      if (bStr) loadedBatches = JSON.parse(bStr);
-    } catch(e) {}
-    return loadedBatches
+    return liveBatches
       .filter((b: any) => isBranchMatch(b.storeId || b.branchId, b.storeName || b.branchName, selectedBranchId))
       .slice(0, 30).map((b: any) => ({
       drugName: b.name || b.drugName || 'Essential Medication',
@@ -430,7 +334,7 @@ export default function AdvancedReports({
       riskLevel: (b.quantity || 0) > 50 ? 'Medium Risk' : 'Low Risk',
       shelfLocation: b.shelfLocation || 'Aisle 1'
     }));
-  }, [activeTenantId, isReset, selectedBranchId, isBranchMatch]);
+  }, [liveBatches, selectedBranchId, isBranchMatch]);
 
   // Recovered Debts state
   const [recoveredDebts, setRecoveredDebts] = useState<RecoveredDebt[]>([]);
@@ -483,29 +387,20 @@ export default function AdvancedReports({
     return Array.from(map.values());
   })();
 
-  // Real Staff Expenditures loaded from local storage / Firestore
-  const staffExpenditures = (() => {
-    if (isReset) return [];
-    try {
-      const expStr = localStorage.getItem('junub_expenditures');
-      if (expStr) {
-        const expList = JSON.parse(expStr);
-        if (Array.isArray(expList) && expList.length > 0) {
-          return expList.map((e: any) => ({
-            id: e.id || `EXP-${Math.floor(1000 + Math.random()*9000)}`,
-            staffEmail: e.requestedByStaffEmail || 'junubposcenter@gmail.com',
-            staffName: e.requestedByStaffName || 'Staff Member',
-            title: e.title || 'Branch Expense',
-            category: e.category || 'Operations',
-            amountUsd: Number(e.amountUsd) || 0,
-            status: e.status ? e.status.charAt(0).toUpperCase() + e.status.slice(1) : 'Approved',
-            date: e.createdAt ? e.createdAt.substring(0, 10) : new Date().toISOString().substring(0, 10)
-          }));
-        }
-      }
-    } catch(e) {}
-    return [];
-  })();
+  // Real Staff Expenditures loaded from live Firestore collection
+  const staffExpenditures = useMemo(() => {
+    if (!Array.isArray(liveExpenditures) || liveExpenditures.length === 0) return [];
+    return liveExpenditures.map((e: any) => ({
+      id: e.id || `EXP-${Math.floor(1000 + Math.random()*9000)}`,
+      staffEmail: e.requestedByStaffEmail || 'junubposcenter@gmail.com',
+      staffName: e.requestedByStaffName || 'Staff Member',
+      title: e.title || 'Branch Expense',
+      category: e.category || 'Operations',
+      amountUsd: Number(e.amountUsd) || 0,
+      status: e.status ? e.status.charAt(0).toUpperCase() + e.status.slice(1) : 'Approved',
+      date: e.createdAt ? e.createdAt.substring(0, 10) : new Date().toISOString().substring(0, 10)
+    }));
+  }, [liveExpenditures]);
 
   // Action: Clear Debt and Move to Recovered Debts & Daily Sales
   const handleClearDebt = (debtId: string) => {
@@ -592,21 +487,13 @@ export default function AdvancedReports({
     });
   }, [recoveredDebts, selectedBranchId, isBranchMatch, startDate, endDate]);
 
-  // Load approved operational expenses for selected branch
+  // Load approved operational expenses for selected branch from live Firestore expenditures
   const totalApprovedExpensesUsd = useMemo(() => {
-    try {
-      const expStr = localStorage.getItem('junub_expenditures');
-      if (expStr) {
-        const expList = JSON.parse(expStr);
-        if (Array.isArray(expList)) {
-          return expList
-            .filter((e: any) => e.status === 'approved' && isBranchMatch(e.branchId || e.storeId, e.branchName || e.storeName, selectedBranchId))
-            .reduce((sum: number, e: any) => sum + (Number(e.amountUsd) || 0), 0);
-        }
-      }
-    } catch(e) {}
-    return 0;
-  }, [selectedBranchId, isBranchMatch]);
+    if (!Array.isArray(liveExpenditures)) return 0;
+    return liveExpenditures
+      .filter((e: any) => e.status === 'approved' && isBranchMatch(e.branchId || e.storeId, e.branchName || e.storeName, selectedBranchId))
+      .reduce((sum: number, e: any) => sum + (Number(e.amountUsd) || 0), 0);
+  }, [liveExpenditures, selectedBranchId, isBranchMatch]);
 
   // Calculations for Daily Sales Summary Breakdown
   const totalCashSales = filteredDailySalesItems
@@ -910,24 +797,17 @@ export default function AdvancedReports({
       else if (activeReportTab === 'channels') bodyContent = renderChannelsHtml();
     }
 
-    const savedContact = (() => {
-      try {
-        const cached = localStorage.getItem('trust_pharmacy_contact');
-        return cached ? JSON.parse(cached) : null;
-      } catch(e) { return null; }
-    })();
-
     const currentBranchObj = selectedBranchId !== 'all'
       ? (activeTenant?.branches?.find((b: any) => b.id === selectedBranchId) || { name: 'Branch Scope', address: activeTenant?.address, phone: activeTenant?.phone })
       : null;
 
     const brandName = currentBranchObj 
-      ? `${activeTenant?.name || 'Royal Trust Pharmacy'} - ${currentBranchObj.name}`
-      : (savedContact?.name || activeTenant?.name || 'Royal Trust Pharmacy');
-    const brandPhone = currentBranchObj?.phone || savedContact?.phone || activeTenant?.phone || activeTenant?.telephone || '+211 922 152 427';
-    const brandAddress = currentBranchObj?.address || savedContact?.address || activeTenant?.address || 'Airport Road, Juba Town, South Sudan';
-    const brandEmail = savedContact?.email || activeTenant?.email || 'info@trustpharmacy.com';
-    const brandLicense = savedContact?.license || activeTenant?.businessRegNo || activeTenant?.license || 'SS-MOH-TRUST-2026';
+      ? `${activeTenant?.name || 'Trust Pharmacy'} - ${currentBranchObj.name}`
+      : (activeTenant?.name || 'Trust Pharmacy');
+    const brandPhone = currentBranchObj?.phone || activeTenant?.phone || activeTenant?.telephone || '+211 922 152 427';
+    const brandAddress = currentBranchObj?.address || activeTenant?.address || 'Airport Road, Juba Town, South Sudan';
+    const brandEmail = activeTenant?.email || 'info@trustpharmacy.com';
+    const brandLicense = activeTenant?.businessRegNo || activeTenant?.license || 'SS-MOH-TRUST-2026';
 
     const doc = `
       <!DOCTYPE html>

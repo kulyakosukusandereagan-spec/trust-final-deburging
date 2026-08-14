@@ -6,7 +6,7 @@ import {
   BookOpen, HelpCircle, Server, Copy, Check, Info, ShieldAlert, Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getAuditLogs, logAuditEvent } from '../utils/auditLogger';
+import { getAuditLogs, logAuditEvent, subscribeToAuditLogs } from '../utils/auditLogger';
 
 // ====================================================================================
 // Types and Interfaces for the Security Simulation
@@ -81,25 +81,21 @@ export default function SecurityModule({ activeRole = 'Pharmacy Admin', userEmai
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    const refreshLogs = () => {
-      const realLogs = getAuditLogs().map((log: any) => ({
+    const unsub = subscribeToAuditLogs((logs) => {
+      const formatted = logs.map((log: any) => ({
         id: log.id,
         timestamp: log.timestamp,
-        tenantId: 'juba-pharma',
-        user: log.userEmail,
+        tenantId: 'trust-pharmacy',
+        user: log.user || log.userEmail,
         action: log.action,
         severity: log.severity,
         ipAddress: log.ipAddress,
         details: log.details
       }));
-      setAuditLogs(realLogs);
-    };
+      setAuditLogs(formatted);
+    });
 
-    refreshLogs();
-    window.addEventListener('juba_audit_log_added', refreshLogs);
-    return () => {
-      window.removeEventListener('juba_audit_log_added', refreshLogs);
-    };
+    return () => unsub();
   }, []);
 
   // --- active flow state ---
@@ -921,12 +917,11 @@ export default function SecurityModule({ activeRole = 'Pharmacy Admin', userEmai
                   <span>Logs Saved: {auditLogs.length}</span>
                   <button 
                     onClick={() => {
-                      localStorage.removeItem('juba_clinical_audit_ledger');
-                      window.dispatchEvent(new Event('juba_audit_log_added'));
+                      logAuditEvent('User Activity', 'AUDIT_LOGS_VIEW_RESET', 'Cleared UI filter view on clinical audit ledger', 'low');
                     }}
                     className="text-slate-400 hover:text-slate-600 cursor-pointer underline text-[9px]"
                   >
-                    Clear Logs
+                    Reset View
                   </button>
                 </div>
               </div>

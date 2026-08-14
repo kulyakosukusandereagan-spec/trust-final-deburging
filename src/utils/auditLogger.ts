@@ -1,4 +1,9 @@
 // Secure audit trail logging utility for HIPAA-compliant pharmaceutical records
+import { setDoc, doc, onSnapshot, getDocs } from 'firebase/firestore';
+import { auditLogsCollectionRef, FIXED_BRANCHES, PHARMACY_ID } from '../lib/pharmacyConfig';
+import { cleanFirestoreData } from '../lib/firebaseSync';
+import { db } from '../lib/firebase';
+
 export interface AuditLog {
   id: string;
   timestamp: string;
@@ -85,17 +90,56 @@ const DEFAULT_LOGS: AuditLog[] = [
   }
 ];
 
+let cachedAuditLogs: AuditLog[] = [...DEFAULT_LOGS];
+let isListening = false;
+
+function initAuditLogsListener() {
+  if (isListening || typeof window === 'undefined') return;
+  isListening = true;
+
+  const perBranch = new Map<string, AuditLog[]>();
+
+  FIXED_BRANCHES.forEach(b => {
+    onSnapshot(
+      auditLogsCollectionRef(b.id),
+      (snap) => {
+        const branchLogs = snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditLog));
+        perBranch.set(b.id, branchLogs);
+        const merged = Array.from(perBranch.values()).flat();
+        merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        cachedAuditLogs = merged.length > 0 ? merged : [...DEFAULT_LOGS];
+        window.dispatchEvent(new CustomEvent('juba_audit_log_added', { detail: cachedAuditLogs[0] }));
+      },
+      (err) => console.error('[auditLogger] Error syncing audit logs:', err)
+    );
+  });
+}
+
+initAuditLogsListener();
+
 export function getAuditLogs(): AuditLog[] {
-  const stored = localStorage.getItem('juba_audit_logs');
-  if (!stored) {
-    localStorage.setItem('juba_audit_logs', JSON.stringify(DEFAULT_LOGS));
-    return DEFAULT_LOGS;
-  }
-  try {
-    return JSON.parse(stored);
-  } catch (e) {
-    return DEFAULT_LOGS;
-  }
+  return cachedAuditLogs;
+}
+
+export function subscribeToAuditLogs(callback: (logs: AuditLog[]) => void): () => void {
+  initAuditLogsListener();
+  const perBranch = new Map<string, AuditLog[]>();
+
+  const unsubs = FIXED_BRANCHES.map(b => 
+    onSnapshot(
+      auditLogsCollectionRef(b.id),
+      (snap) => {
+        const branchLogs = snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditLog));
+        perBranch.set(b.id, branchLogs);
+        const merged = Array.from(perBranch.values()).flat();
+        merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        callback(merged.length > 0 ? merged : [...DEFAULT_LOGS]);
+      },
+      (err) => console.error('[auditLogger] subscribeToAuditLogs error:', err)
+    )
+  );
+
+  return () => unsubs.forEach(u => u());
 }
 
 export function logAuditEvent(
@@ -106,17 +150,17 @@ export function logAuditEvent(
   oldValues?: Record<string, any> | string,
   newValues?: Record<string, any> | string,
   userEmail?: string,
-  userRole?: string
+  userRole?: string,
+  branchId?: string
 ) {
-  const logs = getAuditLogs();
-  
-  // Get currently selected profile role from environment if not specified
   const email = userEmail || 'junubposcenter@gmail.com';
   const role = userRole || 'Pharmacy Admin';
-  const branch = 'Airport Road Main Branch';
+  const targetBranch = (branchId && FIXED_BRANCHES.some(b => b.id === branchId)) ? branchId : FIXED_BRANCHES[0].id;
+  const branchName = FIXED_BRANCHES.find(b => b.id === targetBranch)?.name || 'Airport Road Main Branch';
 
+  const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const newLog: AuditLog = {
-    id: `log-${Math.random().toString(36).substring(2, 11)}`,
+    id: logId,
     timestamp: new Date().toISOString(),
     user: email,
     role,
@@ -125,13 +169,21 @@ export function logAuditEvent(
     severity,
     ipAddress: `198.51.100.${Math.floor(Math.random() * 220) + 20}`,
     details,
-    branch,
+    branch: branchName,
     oldValues: oldValues ? (typeof oldValues === 'string' ? oldValues : JSON.stringify(oldValues)) : undefined,
     newValues: newValues ? (typeof newValues === 'string' ? newValues : JSON.stringify(newValues)) : undefined
   };
 
-  const updatedLogs = [newLog, ...logs];
-  localStorage.setItem('juba_audit_logs', JSON.stringify(updatedLogs));
+  cachedAuditLogs = [newLog, ...cachedAuditLogs.filter(l => l.id !== logId)];
+
+  // Persist directly to Firestore
+  try {
+    setDoc(doc(auditLogsCollectionRef(targetBranch), logId), cleanFirestoreData(newLog)).catch(err => {
+      console.warn('[auditLogger] Failed to write audit log to Firestore:', err);
+    });
+  } catch (err) {
+    console.warn('[auditLogger] Exception writing audit log:', err);
+  }
   
   // Dispatch a window event so current tabs refresh their UI logs list
   window.dispatchEvent(new CustomEvent('juba_audit_log_added', { detail: newLog }));

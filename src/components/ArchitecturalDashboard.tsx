@@ -44,8 +44,44 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
   const [newRateInput, setNewRateInput] = useState<string>((tenant.usdToSspRate || 3100).toString());
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
 
+  // Synchronize exchange rate whenever tenant settings update from Firestore
+  useEffect(() => {
+    if (typeof tenant.usdToSspRate === 'number' && tenant.usdToSspRate > 0) {
+      setUsdToSspRate(tenant.usdToSspRate);
+      setNewRateInput(tenant.usdToSspRate.toString());
+    }
+  }, [tenant.usdToSspRate]);
+
   // Branch clinics list
   const branches = tenant.branches || [];
+
+  // Branch Matching Helper
+  const isBranchMatch = (itemBranchId?: string, itemBranchName?: string, targetBranchId?: string) => {
+    if (!targetBranchId || targetBranchId === 'all' || targetBranchId === 'All') return true;
+    if (itemBranchId === targetBranchId) return true;
+
+    const targetBranch = branches.find((b: any) => b.id === targetBranchId);
+    if (targetBranch) {
+      if (itemBranchId === targetBranch.id) return true;
+      if (itemBranchName && targetBranch.name && itemBranchName.trim().toLowerCase() === targetBranch.name.trim().toLowerCase()) {
+        return true;
+      }
+    }
+
+    const targetIndex = branches.findIndex((b: any) => b.id === targetBranchId);
+    if (targetIndex !== -1) {
+      const legacyStoreId = `store-${targetIndex + 1}`;
+      const legacyBranchId = `branch-juba-${targetIndex + 1}`;
+      if (itemBranchId === legacyStoreId || itemBranchId === legacyBranchId) return true;
+    }
+
+    // If an item lacks branch tags, match only the main branch (first branch)
+    if (branches[0] && branches[0].id === targetBranchId && !itemBranchId && !itemBranchName) {
+      return true;
+    }
+
+    return false;
+  };
 
   // Enforce branch isolation for non-admin staff
   useEffect(() => {
@@ -59,9 +95,7 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
   const staffCount = tenant.staff?.length || 0;
 
   // State for loaded data
-  const [itemsCount, setItemsCount] = useState(0);
-  const [criticalStockAlerts, setCriticalStockAlerts] = useState<any[]>([]);
-  const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+  const [loadedBatches, setLoadedBatches] = useState<any[]>([]);
   const [securityLogs, setSecurityLogs] = useState<any[]>([]);
   const [transactionsList, setTransactionsList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -71,19 +105,28 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
   const branchFilteredTx = selectedBranchId === 'all'
     ? safeTxList
     : safeTxList.filter((tx: any) => {
-        if (!tx.storeId && !tx.branchId) return true;
-        if (selectedBranchId === 'branch-juba-1' || selectedBranchId === 'store-1') {
-          return !tx.storeId || tx.storeId === 'store-1' || tx.branchId === 'branch-juba-1' || tx.storeName?.toLowerCase().includes('central') || tx.branchName?.toLowerCase().includes('central');
-        }
-        if (selectedBranchId === 'branch-juba-2' || selectedBranchId === 'store-2') {
-          return tx.storeId === 'store-2' || tx.branchId === 'branch-juba-2' || tx.storeName?.toLowerCase().includes('northside') || tx.branchName?.toLowerCase().includes('northside');
-        }
-        if (tx.branchId === selectedBranchId || tx.storeId === selectedBranchId) return true;
-        if (branches[0] && branches[0].id === selectedBranchId) {
-          return !tx.storeId || tx.storeId === 'store-1' || tx.branchId === 'store-1';
-        }
-        return tx.tenantId === tenant.id;
+        const txBranchId = tx.branchId || tx.storeId;
+        const txBranchName = tx.branchName || tx.storeName;
+        return isBranchMatch(txBranchId, txBranchName, selectedBranchId);
       });
+
+  const branchFilteredBatches = selectedBranchId === 'all'
+    ? loadedBatches
+    : loadedBatches.filter((b: any) => isBranchMatch(b.storeId || b.branchId, b.storeName || b.branchName, selectedBranchId));
+
+  const itemsCount = branchFilteredBatches.length;
+
+  const criticalStockAlerts = branchFilteredBatches
+    .filter((b: any) => (b.quantity || 0) <= (b.minStockAlert || 15))
+    .map((b: any) => ({
+      id: b.id,
+      name: b.name,
+      stock: b.quantity || 0,
+      limit: b.minStockAlert || 15,
+      branch: b.storeName || b.branchName || 'Main Branch',
+      risk: (b.quantity || 0) === 0 ? 'CRITICAL' : 'HIGH'
+    }))
+    .slice(0, 5);
 
   const now = new Date();
   const todayYear = now.getFullYear();
@@ -110,14 +153,14 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
     return isLocalToday || isUtcToday || isWithin24h;
   });
 
-  // Load operational expenditures and recovered debts from local storage
+  // Load operational expenditures and recovered debts from local storage / Firestore, strictly branch filtered
   let totalApprovedExpensesUsd = 0;
   try {
     const expStr = localStorage.getItem('junub_expenditures');
     if (expStr) {
       const expList = JSON.parse(expStr);
       totalApprovedExpensesUsd = expList
-        .filter((e: any) => e.status === 'approved')
+        .filter((e: any) => e.status === 'approved' && isBranchMatch(e.branchId || e.storeId, e.branchName || e.storeName, selectedBranchId))
         .reduce((sum: number, e: any) => sum + (Number(e.amountUsd) || 0), 0);
     }
   } catch(e) {}
@@ -127,7 +170,9 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
     const recStr = localStorage.getItem('junub_recovered_debts');
     if (recStr) {
       const recList = JSON.parse(recStr);
-      totalRecoveredDebtsUsd = recList.reduce((sum: number, r: any) => sum + (Number(r.amountPaidUsd) || 0), 0);
+      totalRecoveredDebtsUsd = recList
+        .filter((r: any) => isBranchMatch(r.branchId || r.storeId, r.branchName || r.storeName, selectedBranchId))
+        .reduce((sum: number, r: any) => sum + (Number(r.amountPaidUsd) || 0), 0);
     }
   } catch(e) {}
 
@@ -266,20 +311,26 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
   const todayWholesalePct = todayCombinedRev > 0 ? (todayWholesaleRevenue / todayCombinedRev) * 100 : 0;
   const todayRetailPct = todayCombinedRev > 0 ? (todayRetailRevenue / todayCombinedRev) * 100 : 0;
 
-  const handleSaveRate = (e: React.FormEvent) => {
+  const handleSaveRate = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsed = parseFloat(newRateInput);
     if (!parsed || parsed <= 0) return;
     
     setUsdToSspRate(parsed);
+    const updatedTenant = {
+      ...tenant,
+      usdToSspRate: parsed
+    };
     if (onUpdateTenant) {
-      onUpdateTenant({
-        ...tenant,
-        usdToSspRate: parsed
-      });
+      onUpdateTenant(updatedTenant);
+    }
+    try {
+      const { savePharmacySettingsToFirestore } = await import('../lib/firebaseSync');
+      await savePharmacySettingsToFirestore(updatedTenant);
+    } catch (err) {
+      console.warn('Failed to save rate to Firestore:', err);
     }
     setShowRateModal(false);
-    alert(`Exchange rate updated: 1 USD = ${parsed.toLocaleString()} SSP.`);
   };
   
   // Load dashboard data and simulate/fetch
@@ -298,12 +349,12 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
         ]);
 
         // Fetch batches safely
-        let loadedBatches: any[] = [];
+        let loadedBatchesList: any[] = [];
         try {
           const batchesRes = await fetch(`/api/v1/${tenant.id}/inventory/batches`);
           if (batchesRes.ok) {
             const batchesData = await batchesRes.json();
-            loadedBatches = Array.isArray(batchesData?.data) ? batchesData.data : (Array.isArray(batchesData) ? batchesData : []);
+            loadedBatchesList = Array.isArray(batchesData?.data) ? batchesData.data : (Array.isArray(batchesData) ? batchesData : []);
           }
         } catch (e) {}
 
@@ -314,14 +365,18 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
             const cachedBatches = JSON.parse(cachedBatchesStr);
             if (Array.isArray(cachedBatches) && cachedBatches.length > 0) {
               const batchMap = new Map();
-              loadedBatches.forEach((b: any) => batchMap.set(b.id || b.batchNumber || b.name, b));
+              loadedBatchesList.forEach((b: any) => batchMap.set(b.id || b.batchNumber || b.name, b));
               cachedBatches.forEach((cb: any) => {
                 const key = cb.id || cb.batchNumber || cb.name;
                 batchMap.set(key, cb); // Local batch takes precedence for live stock deduction
               });
-              loadedBatches = Array.from(batchMap.values());
+              loadedBatchesList = Array.from(batchMap.values());
             }
           } catch (err) {}
+        }
+
+        if (active) {
+          setLoadedBatches(loadedBatchesList);
         }
         
         // Fetch transactions safely from server API, Firestore, and LocalStorage
@@ -391,36 +446,6 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
           }
           return combined;
         });
-        
-        // Compute stats
-        const activeLots = loadedBatches.length;
-        setItemsCount(activeLots);
-
-        // Compute critical stock alerts
-        const alerts = loadedBatches
-          .filter((b: any) => (b.quantity || 0) <= (b.minStockAlert || 15))
-          .map((b: any) => ({
-            id: b.id,
-            name: b.name,
-            stock: b.quantity || 0,
-            limit: b.minStockAlert || 15,
-            branch: b.storeName || 'Main Store',
-            risk: (b.quantity || 0) === 0 ? 'CRITICAL' : 'HIGH'
-          }));
-        
-        setCriticalStockAlerts(alerts.slice(0, 5));
-
-        // Map recent transactions
-        const mappedTx = mergedTx.slice(-5).reverse().map((tx: any) => ({
-          id: tx.id,
-          inv: tx.invoiceNumber || tx.id,
-          items: tx.items?.map((i: any) => `${i.name} x${i.quantity}`).join(', ') || 'Medication Batch Checkout',
-          total: getTransactionTotal(tx),
-          method: tx.paymentMethod || 'cash',
-          time: tx.createdAt ? new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently'
-        }));
-        
-        setRecentTransactions(mappedTx);
 
       } catch (err) {
         console.error("Error loading dashboard data:", err);
@@ -443,18 +468,6 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
             localStorage.setItem(`junub_transactions_${tenant.id}`, JSON.stringify(merged));
             localStorage.setItem('trust_pharmacy_sales', JSON.stringify(merged));
           } catch (e) {}
-
-          // Update recent transactions list in real-time
-          const mappedTx = merged.slice(-5).reverse().map((tx: any) => ({
-            id: tx.id,
-            inv: tx.invoiceNumber || tx.id,
-            items: tx.items?.map((i: any) => `${i.name} x${i.quantity}`).join(', ') || 'Medication Batch Checkout',
-            total: getTransactionTotal(tx),
-            method: tx.paymentMethod || 'cash',
-            time: tx.createdAt ? new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently'
-          }));
-          setRecentTransactions(mappedTx);
-
           return merged;
         });
       }
@@ -1215,14 +1228,14 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium">
-                  {safeTxList.length === 0 ? (
+                  {branchFilteredTx.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="py-6 text-center text-slate-400 italic text-xs">
-                        No sales registered yet today. Perform a sale in POS terminal to view live updates here.
+                        No sales registered yet today for the selected branch. Perform a sale in POS terminal to view live updates here.
                       </td>
                     </tr>
                   ) : (
-                    safeTxList.slice().reverse().slice(0, 7).map((tx: any, idx: number) => {
+                    branchFilteredTx.slice().reverse().slice(0, 7).map((tx: any, idx: number) => {
                       const itemsArr = Array.isArray(tx.items) ? tx.items : [];
                       const formattedTime = tx.createdAt ? new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now';
                       const txTotal = Number(tx.total) || Number(tx.subtotal) || 0;

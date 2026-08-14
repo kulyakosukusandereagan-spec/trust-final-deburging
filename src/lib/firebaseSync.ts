@@ -35,6 +35,7 @@ import {
   isValidBranchId,
   pharmacyDocRef,
   branchDocRef,
+  branchesCollectionRef,
   batchesCollectionRef,
   stockMovementsCollectionRef,
   staffCollectionRef,
@@ -163,6 +164,30 @@ export async function fetchPharmacyBootstrapData() {
   }
 }
 
+/** Updates a branch document in Firestore. */
+export async function saveBranchToFirestore(branchId: string, branchData: any, isOnlineParam?: boolean): Promise<void> {
+  const targetBranch = resolveBranchId(branchId);
+  if (!checkIsOnline(isOnlineParam)) return;
+  try {
+    await setDoc(branchDocRef(targetBranch), cleanFirestoreData({ ...branchData, id: targetBranch }), { merge: true });
+  } catch (err) {
+    console.error('[firebaseSync] saveBranchToFirestore error:', err);
+  }
+}
+
+/** Subscribes to all branches in real-time. */
+export function subscribeToBranchesFirestore(callback: (branches: any[]) => void): () => void {
+  return onSnapshot(
+    branchesCollectionRef(),
+    (snapshot) => {
+      if (snapshot.empty) return;
+      const branches = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      callback(branches);
+    },
+    (err) => console.error('[firebaseSync] subscribeToBranchesFirestore error:', err)
+  );
+}
+
 // ----------------------------------------------------------------------------
 // Staff
 // ----------------------------------------------------------------------------
@@ -193,10 +218,26 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
   }
 }
 
-export async function deleteStaffAccountFromFirestore(branchId: string, staffId: string, _staffEmail?: string): Promise<void> {
-  const targetBranch = resolveBranchId(branchId);
+export async function deleteStaffAccountFromFirestore(branchId: string, staffId: string, staffEmail?: string): Promise<void> {
   try {
-    await deleteDoc(doc(staffCollectionRef(targetBranch), staffId));
+    for (const b of FIXED_BRANCHES) {
+      if (staffId) {
+        try {
+          await deleteDoc(doc(staffCollectionRef(b.id), staffId));
+        } catch (e) {}
+      }
+      if (staffEmail) {
+        try {
+          const snap = await getDocs(staffCollectionRef(b.id));
+          for (const d of snap.docs) {
+            const data = d.data();
+            if (data?.email && data.email.toLowerCase() === staffEmail.toLowerCase()) {
+              await deleteDoc(doc(staffCollectionRef(b.id), d.id));
+            }
+          }
+        } catch (e) {}
+      }
+    }
   } catch (err) {
     console.error('[firebaseSync] deleteStaffAccountFromFirestore error:', err);
   }
@@ -213,7 +254,15 @@ export async function loadStaffFromFirestore(branchId?: string): Promise<any[]> 
       return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     }
     const results = await Promise.all(FIXED_BRANCHES.map((b) => getDocs(staffCollectionRef(b.id))));
-    return results.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const all = results.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const uniqueMap = new Map<string, any>();
+    all.forEach((s: any) => {
+      const key = s.email ? s.email.toLowerCase() : s.id;
+      if (key && !uniqueMap.has(key)) {
+        uniqueMap.set(key, s);
+      }
+    });
+    return Array.from(uniqueMap.values());
   } catch (err) {
     console.error('[firebaseSync] loadStaffFromFirestore error:', err);
     return [];
@@ -238,7 +287,15 @@ export function subscribeToStaffFirestore(branchIdOrCallback: string | ((staffLi
       staffCollectionRef(b.id),
       (snapshot) => {
         perBranch.set(b.id, snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
-        callback(Array.from(perBranch.values()).flat());
+        const allRaw = Array.from(perBranch.values()).flat();
+        const uniqueMap = new Map<string, any>();
+        allRaw.forEach((s) => {
+          const key = s.email ? s.email.toLowerCase() : s.id;
+          if (key && !uniqueMap.has(key)) {
+            uniqueMap.set(key, s);
+          }
+        });
+        callback(Array.from(uniqueMap.values()));
       },
       (err) => console.error('[firebaseSync] subscribeToStaffFirestore error:', err)
     )
@@ -572,6 +629,21 @@ export async function savePharmacySettingsToFirestore(updatedPharmacy: any): Pro
     console.error('[firebaseSync] savePharmacySettingsToFirestore error:', err);
     throw err;
   }
+}
+
+/**
+ * Subscribes to live pharmacy-level settings (logo, contact info, exchange rate, etc.)
+ */
+export function subscribeToPharmacySettingsFirestore(callback: (settings: any) => void): () => void {
+  return onSnapshot(
+    pharmacyDocRef(),
+    (snapshot) => {
+      if (snapshot.exists()) {
+        callback({ id: snapshot.id, ...snapshot.data() });
+      }
+    },
+    (err) => console.error('[firebaseSync] subscribeToPharmacySettingsFirestore error:', err)
+  );
 }
 
 // ----------------------------------------------------------------------------

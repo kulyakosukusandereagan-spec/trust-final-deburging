@@ -54,7 +54,9 @@ import {
   ensurePharmacyAndBranchesExist,
   loadDeletedStaffFromFirestore,
   loadStaffFromFirestore,
-  subscribeToStaffFirestore
+  subscribeToStaffFirestore,
+  subscribeToPharmacySettingsFirestore,
+  subscribeToBranchesFirestore
 } from './lib/firebaseSync';
 
 export default function App() {
@@ -117,7 +119,38 @@ export default function App() {
     const unsubStaff = subscribeToStaffFirestore((fsStaff: any[]) => {
       setTenants((prev) => prev.map((t) => ({ ...t, staff: fsStaff })));
     });
-    return () => unsubStaff();
+    const unsubPharmacy = subscribeToPharmacySettingsFirestore((fsSettings: any) => {
+      if (!fsSettings) return;
+      setTenants((prev) => prev.map((t) => ({
+        ...t,
+        name: fsSettings.name || t.name,
+        email: fsSettings.email || t.email,
+        telephone: fsSettings.phone || fsSettings.telephone || t.telephone,
+        address: fsSettings.address || t.address,
+        businessRegNo: fsSettings.businessRegNo || fsSettings.license || t.businessRegNo,
+        logoUrl: fsSettings.logoUrl !== undefined ? fsSettings.logoUrl : t.logoUrl,
+        usdToSspRate: typeof fsSettings.usdToSspRate === 'number' ? fsSettings.usdToSspRate : t.usdToSspRate,
+        receiptHeader: fsSettings.receiptHeader || t.receiptHeader,
+        receiptFooter: fsSettings.receiptFooter || t.receiptFooter
+      })));
+    });
+    const unsubBranches = subscribeToBranchesFirestore((fsBranches: any[]) => {
+      if (!Array.isArray(fsBranches) || fsBranches.length === 0) return;
+      setTenants((prev) =>
+        prev.map((t) => {
+          const updatedBranches = (t.branches || []).map((b) => {
+            const match = fsBranches.find((fb) => fb.id === b.id);
+            return match ? { ...b, ...match } : b;
+          });
+          return { ...t, branches: updatedBranches };
+        })
+      );
+    });
+    return () => {
+      unsubStaff();
+      unsubPharmacy();
+      unsubBranches();
+    };
   }, []);
 
   // activeTenantId is always the single pharmacy id now (kept for the many

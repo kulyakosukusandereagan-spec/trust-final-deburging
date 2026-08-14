@@ -5,11 +5,11 @@ rules_version = '2';
 // ----------------------------------------------------------------------------
 // Enforces single-tenant isolation for PHARMACY_ID ("trust-pharmacy") and
 // allows administrators and authorized staff to read and edit branches,
-// staff profiles, products, batches, and sales transactions across the 3 fixed branches:
+// staff profiles, products, batches, sales transactions, expenditures,
+// and exchange rates across all branches:
 //   - main-branch
 //   - wau-branch
 //   - juba-branch
-// Rejects any creation or write attempts to unauthorized or 4th branches.
 // 100% ONLINE REAL-TIME FIRESTORE SYNC ENFORCED.
 // ============================================================================
 
@@ -21,11 +21,11 @@ service cloud.firestore {
     }
 
     function isFixedBranch(branchId) {
-      return branchId in ['main-branch', 'wau-branch', 'juba-branch'];
+      return branchId in ['main-branch', 'wau-branch', 'juba-branch', 'branch-dt-1', 'store-1', 'store-2', 'store-3'];
     }
 
     match /pharmacy/{pharmacyId} {
-      // Allow reading & editing the pharmacy root settings and branch registry
+      // Allow reading & editing the pharmacy root settings, dollar exchange rate, contact info, and branding
       allow read, write: if isThisPharmacy(pharmacyId);
 
       match /users/{userId} {
@@ -33,23 +33,28 @@ service cloud.firestore {
       }
 
       match /branches/{branchId} {
-        // Allow editing branch details (Name, Address, Phone, Manager) for the 3 fixed branches
-        allow read, write: if isThisPharmacy(pharmacyId) && isFixedBranch(branchId);
+        // Allow editing branch details (Name, Address, Phone, Manager, Status) for branches
+        allow read, write: if isThisPharmacy(pharmacyId);
 
         match /{subcollection}/{docId} {
-          allow read, write: if isThisPharmacy(pharmacyId) && isFixedBranch(branchId);
+          allow read, write: if isThisPharmacy(pharmacyId);
 
           match /{nestedCollection=**} {
-            allow read, write: if isThisPharmacy(pharmacyId) && isFixedBranch(branchId);
+            allow read, write: if isThisPharmacy(pharmacyId);
           }
         }
       }
+
+      match /{allSubpaths=**} {
+        allow read, write: if isThisPharmacy(pharmacyId);
+      }
     }
 
-    // Safety fallback for trust-pharmacy subpaths
+    // Top-level collections for transactions, batches, staff, expenditures
     match /{document=**} {
-      allow read, write: if request.auth != null || true;
+      allow read, write: if true;
     }
   }
 }
+
 

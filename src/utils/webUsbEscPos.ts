@@ -193,21 +193,10 @@ export function buildEscPosCommands(data: ReceiptPrintData): Uint8Array {
     for (let i = 0; i < b.length; i++) chunks.push(b[i]);
   };
 
-  let pharmacyName = data.pharmacyName || "Royal Trust Pharmacy";
-  let address = data.branchAddress || data.address || "Airport Road, Juba Town, South Sudan";
-  let phone = data.branchPhone || data.phone || "+211 922 152 427";
-  let licenseNumber = data.licenseNumber || "SS-MOH-TRUST-2026";
-
-  const savedContact = localStorage.getItem('trust_pharmacy_contact');
-  if (savedContact) {
-    try {
-      const parsed = JSON.parse(savedContact);
-      if (parsed.name) pharmacyName = parsed.name;
-      if (parsed.address && !data.branchAddress) address = parsed.address;
-      if (parsed.phone && !data.branchPhone) phone = parsed.phone;
-      if (parsed.license) licenseNumber = parsed.license;
-    } catch (e) {}
-  }
+  const pharmacyName = data.pharmacyName || "TRUST PHARMACY";
+  const address = data.branchAddress || data.address || "Airport Road, Juba Town, South Sudan";
+  const phone = data.branchPhone || data.phone || "+211 922 152 427";
+  const licenseNumber = data.licenseNumber || "SS-MOH-TRUST-2026";
 
   const invoiceNo = data.invoiceNumber || data.receiptNo || `INV-POS-${Math.floor(100000 + Math.random() * 900000)}`;
   const formattedDate = data.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString();

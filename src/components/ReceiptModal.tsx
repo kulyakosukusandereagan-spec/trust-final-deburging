@@ -3,6 +3,7 @@ import { Printer, Copy, Check, X, Usb } from 'lucide-react';
 import { SaleRecord } from '../types/pharmacy';
 import { printThermalReceipt } from '../utils/printReceipt';
 import { getUsbPrinterStatus, requestPairUsbPrinter } from '../utils/webUsbEscPos';
+import { subscribeToPharmacySettingsFirestore } from '../lib/firebaseSync';
 
 interface ReceiptModalProps {
   sale: SaleRecord | null;
@@ -13,9 +14,28 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
   const [copied, setCopied] = React.useState(false);
   const [usbStatus, setUsbStatus] = React.useState(getUsbPrinterStatus());
   const [pairMessage, setPairMessage] = React.useState<string | null>(null);
+  const [pharmacyInfo, setPharmacyInfo] = React.useState<any>({
+    name: 'TRUST PHARMACY',
+    license: 'SS-MOH-TRUST-2026',
+    phone: '+211 922 152 427',
+    address: 'Airport Road, Juba, South Sudan',
+    logoUrl: ''
+  });
 
   React.useEffect(() => {
     setUsbStatus(getUsbPrinterStatus());
+    const unsub = subscribeToPharmacySettingsFirestore((settings) => {
+      if (settings) {
+        setPharmacyInfo({
+          name: settings.name || 'TRUST PHARMACY',
+          license: settings.license || settings.businessRegNo || 'SS-MOH-TRUST-2026',
+          phone: settings.phone || settings.telephone || '+211 922 152 427',
+          address: settings.address || 'Airport Road, Juba, South Sudan',
+          logoUrl: settings.logoUrl || ''
+        });
+      }
+    });
+    return () => unsub();
   }, []);
 
   if (!sale) return null;
@@ -89,46 +109,22 @@ Thank you for trusting Trust Pharmacy!
         <div className="p-6 bg-amber-50/40 font-mono text-xs space-y-4 max-h-[70vh] overflow-y-auto" id="printable-receipt">
           
           <div className="text-center space-y-2 pb-3 border-b border-dashed border-slate-300">
-            {localStorage.getItem('trust_pharmacy_logo') ? (
+            {pharmacyInfo.logoUrl ? (
               <img 
-                src={localStorage.getItem('trust_pharmacy_logo')!} 
+                src={pharmacyInfo.logoUrl} 
                 alt="Trust Pharmacy Logo" 
                 className="h-14 w-auto mx-auto mb-1 object-contain max-w-[180px]" 
               />
             ) : null}
             <h2 className="font-extrabold text-base tracking-tight text-slate-900 font-sans uppercase">
-              {(() => {
-                const saved = localStorage.getItem('trust_pharmacy_contact');
-                if (saved) {
-                  try { return JSON.parse(saved).name || "TRUST PHARMACY"; } catch (e) {}
-                }
-                return "TRUST PHARMACY";
-              })()}
+              {pharmacyInfo.name}
             </h2>
             <p className="text-[11px] font-bold text-slate-700 uppercase">{sale.branchName || 'Main Branch'}</p>
             <p className="text-[10px] text-slate-500">
-              License: {(() => {
-                const saved = localStorage.getItem('trust_pharmacy_contact');
-                if (saved) {
-                  try { return JSON.parse(saved).license || "SS-MOH-TRUST-2026"; } catch (e) {}
-                }
-                return "SS-MOH-TRUST-2026";
-              })()}
+              License: {pharmacyInfo.license}
             </p>
             <p className="text-[10px] text-slate-500">
-              Tel: {(() => {
-                const saved = localStorage.getItem('trust_pharmacy_contact');
-                if (saved) {
-                  try { return JSON.parse(saved).phone || "+211 922 152 427"; } catch (e) {}
-                }
-                return "+211 922 152 427";
-              })()} • {(() => {
-                const saved = localStorage.getItem('trust_pharmacy_contact');
-                if (saved) {
-                  try { return JSON.parse(saved).address || "Airport Road, Juba, South Sudan"; } catch (e) {}
-                }
-                return "Airport Road, Juba, South Sudan";
-              })()}
+              Tel: {pharmacyInfo.phone} • {pharmacyInfo.address}
             </p>
           </div>
 
