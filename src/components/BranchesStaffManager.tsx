@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { auth, createStaffInFirebaseAuth } from '../lib/firebase';
 import { 
   deleteStaffAccountFromFirestore, 
+  getStaffDocId,
   saveBranchToFirestore, 
   saveStaffAccountToFirestore 
 } from '../lib/firebaseSync';
@@ -264,8 +265,9 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       return;
     }
 
+    const newStaffId = getStaffDocId(cleanEmail);
     const newStaff: Staff = {
-      id: `staff-${Date.now()}`,
+      id: newStaffId,
       name: staffName.trim(),
       email: cleanEmail,
       password: staffPassword || 'Staff123!',
@@ -278,18 +280,23 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     const updatedTenant: Tenant = {
       ...tenant,
       activeUsers: (tenant.activeUsers || 0) + 1,
-      staff: [...staff, newStaff]
+      staff: [...staff.filter(s => s.email?.toLowerCase() !== cleanEmail), newStaff]
     };
 
     onUpdateTenant(updatedTenant);
 
-    // Save directly to Firestore staff collection online so staff can log in from any device instantly
-    saveStaffAccountToFirestore(newStaff.branchId || 'main-branch', newStaff)
-      .catch(err => console.warn("Notice saving staff to Firestore:", err));
-
     // Register user in Firebase Authentication safely via Secondary Auth instance
     createStaffInFirebaseAuth(cleanEmail, staffPassword || 'Staff123!')
+      .then((success) => {
+        if (!success) {
+          console.warn(`Notice: Could not automatically provision Firebase Auth for ${cleanEmail}.`);
+        }
+      })
       .catch(err => console.warn("Notice registering user in Firebase Auth:", err));
+
+    // Save directly to Firestore staff collection online with deterministic ID
+    saveStaffAccountToFirestore(newStaff.branchId || 'main-branch', newStaff)
+      .catch(err => console.warn("Notice saving staff to Firestore:", err));
 
     // Reset form
     setStaffName('');
@@ -720,7 +727,7 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
 
                   {staff.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-10 text-center text-slate-400 font-medium font-mono">
+                      <td colSpan={8} className="px-6 py-10 text-center text-slate-400 font-medium font-mono">
                         No team members registered under this pharmacy domain.
                       </td>
                     </tr>

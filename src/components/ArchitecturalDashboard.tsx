@@ -92,7 +92,10 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
 
   // Stats calculation
   const branchesCount = tenant.branches?.length || 0;
-  const staffCount = tenant.staff?.length || 0;
+  const branchFilteredStaff = selectedBranchId === 'all'
+    ? (tenant.staff || [])
+    : (tenant.staff || []).filter((s: any) => isBranchMatch(s.branchId, undefined, selectedBranchId));
+  const staffCount = branchFilteredStaff.length;
 
   // State for loaded data
   const [loadedBatches, setLoadedBatches] = useState<any[]>([]);

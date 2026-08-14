@@ -192,13 +192,22 @@ export function subscribeToBranchesFirestore(callback: (branches: any[]) => void
 // Staff
 // ----------------------------------------------------------------------------
 
+export function getStaffDocId(emailOrId: string): string {
+  if (!emailOrId) return `staff_${Date.now()}`;
+  if (emailOrId.includes('@')) {
+    return `staff_${emailOrId.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+  }
+  return emailOrId.startsWith('staff_') ? emailOrId : `staff_${emailOrId}`;
+}
+
 export async function saveStaffAccountsToFirestore(branchId: string, staffList: any[], isOnlineParam?: boolean): Promise<void> {
   const targetBranch = resolveBranchId(branchId);
   if (!checkIsOnline(isOnlineParam)) return;
   try {
     const batch = writeBatch(db);
     staffList.forEach((member) => {
-      batch.set(doc(staffCollectionRef(targetBranch), member.id), cleanFirestoreData({ ...member, branchId: targetBranch }), { merge: true });
+      const docId = getStaffDocId(member.email || member.id);
+      batch.set(doc(staffCollectionRef(targetBranch), docId), cleanFirestoreData({ ...member, id: docId, branchId: targetBranch }), { merge: true });
     });
     await batch.commit();
   } catch (err) {
@@ -212,7 +221,29 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
   if (!targetStaff) return;
   if (!checkIsOnline(isOnlineParam)) return;
   try {
-    await setDoc(doc(staffCollectionRef(targetBranch), targetStaff.id), cleanFirestoreData({ ...targetStaff, branchId: targetBranch }), { merge: true });
+    const cleanEmail = targetStaff.email ? targetStaff.email.trim().toLowerCase() : '';
+    const docId = getStaffDocId(cleanEmail || targetStaff.id);
+    const dataToSave = {
+      ...targetStaff,
+      id: docId,
+      email: cleanEmail || targetStaff.email,
+      branchId: targetBranch
+    };
+
+    // Save with deterministic doc ID
+    await setDoc(doc(staffCollectionRef(targetBranch), docId), cleanFirestoreData(dataToSave), { merge: true });
+
+    // Clean up any stale duplicate docs with matching email but different docId
+    if (cleanEmail) {
+      try {
+        const snap = await getDocs(staffCollectionRef(targetBranch));
+        for (const d of snap.docs) {
+          if (d.id !== docId && d.data()?.email?.toLowerCase() === cleanEmail) {
+            await deleteDoc(doc(staffCollectionRef(targetBranch), d.id));
+          }
+        }
+      } catch (e) {}
+    }
   } catch (err) {
     console.error('[firebaseSync] saveStaffAccountToFirestore error:', err);
   }
@@ -220,18 +251,26 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
 
 export async function deleteStaffAccountFromFirestore(branchId: string, staffId: string, staffEmail?: string): Promise<void> {
   try {
+    const cleanEmail = staffEmail ? staffEmail.trim().toLowerCase() : '';
+    const deterministicId = cleanEmail ? getStaffDocId(cleanEmail) : staffId;
+
     for (const b of FIXED_BRANCHES) {
       if (staffId) {
         try {
           await deleteDoc(doc(staffCollectionRef(b.id), staffId));
         } catch (e) {}
       }
-      if (staffEmail) {
+      if (deterministicId && deterministicId !== staffId) {
+        try {
+          await deleteDoc(doc(staffCollectionRef(b.id), deterministicId));
+        } catch (e) {}
+      }
+      if (cleanEmail) {
         try {
           const snap = await getDocs(staffCollectionRef(b.id));
           for (const d of snap.docs) {
             const data = d.data();
-            if (data?.email && data.email.toLowerCase() === staffEmail.toLowerCase()) {
+            if (data?.email && data.email.trim().toLowerCase() === cleanEmail) {
               await deleteDoc(doc(staffCollectionRef(b.id), d.id));
             }
           }
