@@ -196,18 +196,22 @@ export default function PharmacyPOS({
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedStore, setSelectedStore] = useState<string>('All');
   
-  // Dynamic Tenant Branches
+  // Dynamic Tenant Branches (Active Only)
   const availableBranches = useMemo(() => {
+    let list: any[] = [];
     if (activeTenant?.branches && activeTenant.branches.length > 0) {
-      return activeTenant.branches;
+      list = activeTenant.branches;
+    } else {
+      list = [{ 
+        id: 'branch-dt-1', 
+        name: activeTenant?.name ? `${activeTenant.name} - Main Branch` : 'Royal Trust Pharmacy - Main Branch', 
+        address: 'Airport Road, Juba Town', 
+        phone: '+211 922 152 427', 
+        isActive: true 
+      }];
     }
-    return [{ 
-      id: 'branch-dt-1', 
-      name: activeTenant?.name ? `${activeTenant.name} - Main Branch` : 'Royal Trust Pharmacy - Main Branch', 
-      address: 'Airport Road, Juba Town', 
-      phone: '+211 922 152 427', 
-      isActive: true 
-    }];
+    const activeList = list.filter((b: any) => b && b.isActive !== false);
+    return activeList.length > 0 ? activeList : list;
   }, [activeTenant]);
 
   const stores = useMemo(() => [
@@ -3275,7 +3279,7 @@ export default function PharmacyPOS({
                           medicineId: generatorMedicineId,
                           sku: batches.find(b => b.drugId === generatorMedicineId)?.sku || "GEN",
                           barcode: generatorBarcode,
-                          username: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Dispensary Clerk"
+                          username: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Dispensary Clerk"
                         })
                       });
                       const data = await response.json();

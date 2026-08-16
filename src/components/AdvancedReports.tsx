@@ -83,9 +83,12 @@ export default function AdvancedReports({
     }
   }, [initialBranchId, restrictedBranchIdProp]);
 
-  const branches = activeTenant?.branches || [
-    { id: "branch-dt-1", name: "Royal Trust Pharmacy - Main Branch" }
-  ];
+  const branches = useMemo(() => {
+    const list = (activeTenant?.branches || []).filter((b: any) => b && b.isActive !== false);
+    return list.length > 0 ? list : [
+      { id: "branch-dt-1", name: "Royal Trust Pharmacy - Main Branch", isActive: true }
+    ];
+  }, [activeTenant?.branches]);
 
   // Branch Matching Helper
   const isBranchMatch = useCallback((itemBranchId?: string, itemBranchName?: string, targetBranchId?: string) => {
@@ -230,17 +233,24 @@ export default function AdvancedReports({
         rawItems.forEach((it: any, idx: number) => {
           const itemPrice = typeof it.price === 'number' ? it.price : (typeof it.unitPriceUsd === 'number' ? it.unitPriceUsd : (getTransactionTotal(tx) / (it.quantity || 1)));
           const itemQty = it.quantity || it.unitsSold || 1;
-          const itemCost = it.cost || (itemPrice * 0.7);
+          const itemCost = typeof it.cost === 'number' ? it.cost : (itemPrice * 0.7);
+          const itemName = it.name || it.drugName || it.item || 'Essential Pharmaceutical';
+          const txDateStr = tx.timestamp || tx.createdAt || new Date().toISOString();
 
           newSalesItems.push({
             id: `${tx.id || tx.invoiceNumber}-item-${idx}`,
             invoiceNumber: tx.invoiceNumber || `TX-${tx.id?.substring(0, 6) || 'LIVE'}`,
-            dateTime: tx.timestamp || tx.createdAt || new Date().toISOString(),
-            cashierName,
-            cashierEmail,
-            drugName: it.name || it.drugName || 'Pharmaceutical Item',
+            date: txDateStr.substring(0, 10),
+            dateTime: txDateStr,
+            item: itemName,
+            drugName: itemName,
+            qtySold: itemQty,
             quantitySold: itemQty,
+            unitCost: itemCost,
+            unitPrice: itemPrice,
             unitPriceUsd: itemPrice,
+            retailPrice: it.retailPrice || itemPrice,
+            wholesaleLimit: it.wholesaleLimit || 10,
             totalAmount: itemPrice * itemQty,
             totalProfit: (itemPrice - itemCost) * itemQty,
             paymentMethod: tx.paymentMethod || 'Cash',
@@ -248,6 +258,10 @@ export default function AdvancedReports({
             pricingType: it.pricingType || tx.pricingType || 'Retail',
             batchNumber: it.batchNumber || it.batchNo || 'LOT-2026-A',
             notes: it.notes || tx.notes || '',
+            cashierName,
+            cashierEmail,
+            staffName: cashierName,
+            staffEmail: cashierEmail,
             branchId: tx.branchId || tx.storeId,
             storeId: tx.storeId || tx.branchId,
             branchName: tx.branchName || tx.storeName,
@@ -256,8 +270,8 @@ export default function AdvancedReports({
 
           newUnitLogs.push({
             id: `${tx.id || tx.invoiceNumber}-unit-${idx}`,
-            drugName: it.name || it.drugName || 'Pharmaceutical Item',
-            dateTime: tx.timestamp || tx.createdAt || new Date().toISOString(),
+            drugName: itemName,
+            dateTime: txDateStr,
             unitsSold: itemQty,
             unitPriceUsd: itemPrice,
             totalAmountUsd: itemPrice * itemQty,
@@ -620,19 +634,24 @@ export default function AdvancedReports({
           </tr>
         </thead>
         <tbody>
-          ${filteredDailySalesItems.slice(0, 100).map(i => `
-            <tr>
-              <td>${i.date}</td>
-              <td><strong>${i.item}</strong></td>
-              <td>${i.qtySold}</td>
-              <td>$${i.unitPrice.toFixed(2)}</td>
-              <td><strong>$${i.totalAmount.toFixed(2)} USD</strong></td>
-              <td><strong style="color:#0284c7;">${(i.totalAmount * rate).toLocaleString()} SSP</strong></td>
-              <td>${i.pricingType}</td>
-              <td>${i.status}</td>
-              <td>${i.staffName}</td>
-            </tr>
-          `).join('')}
+          ${filteredDailySalesItems.slice(0, 100).map(i => {
+            const itemName = i.item || i.drugName || 'Pharmaceutical Item';
+            const unitPriceNum = Number(i.unitPrice || (i.totalAmount ? (i.totalAmount / (i.qtySold || 1)) : 0)) || 0;
+            const totalAmountNum = Number(i.totalAmount || 0) || 0;
+            return `
+              <tr>
+                <td>${i.date || ''}</td>
+                <td><strong>${itemName}</strong></td>
+                <td>${i.qtySold || i.quantitySold || 1}</td>
+                <td>$${unitPriceNum.toFixed(2)}</td>
+                <td><strong>$${totalAmountNum.toFixed(2)} USD</strong></td>
+                <td><strong style="color:#0284c7;">${(totalAmountNum * rate).toLocaleString()} SSP</strong></td>
+                <td>${i.pricingType || 'Retail'}</td>
+                <td>${i.status || 'Paid'}</td>
+                <td>${i.staffName || i.cashierName || 'Active Pharmacist'}</td>
+              </tr>
+            `;
+          }).join('')}
         </tbody>
       </table>
     `;
@@ -1202,7 +1221,7 @@ export default function AdvancedReports({
                       className="bg-slate-800 text-slate-100 text-xs font-bold px-3 py-2 rounded-xl border border-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-400 cursor-pointer w-full md:w-auto"
                     >
                       <option value="">🔍 Quick Select Drug for Unit Audit...</option>
-                      {Array.from(new Set(filteredDailySalesItems.map(i => i.item))).map(drugName => (
+                      {Array.from(new Set(filteredDailySalesItems.map(i => i.item || i.drugName).filter(Boolean))).map(drugName => (
                         <option key={drugName} value={drugName}>💊 {drugName}</option>
                       ))}
                     </select>
@@ -1245,56 +1264,76 @@ export default function AdvancedReports({
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium">
                       {filteredDailySalesItems
-                        .filter(i => i.item.toLowerCase().includes(searchQuery.toLowerCase()))
-                        .map((row) => (
-                          <tr 
-                            key={row.id} 
-                            onClick={() => setSelectedDrugForModal(row.item)}
-                            className="hover:bg-sky-50/80 transition-colors cursor-pointer group"
-                            title={`Tap to view full unit-by-unit sales history for ${row.item}`}
-                          >
-                            <td className="p-3 font-mono text-slate-600 font-semibold">{row.date}</td>
-                            <td className="p-3">
-                              <div className="font-extrabold text-slate-900 group-hover:text-sky-700 flex items-center gap-1.5">
-                                <span>{row.item}</span>
-                                <Eye className="w-3.5 h-3.5 text-sky-500 opacity-0 group-hover:opacity-100 transition-opacity" />
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono">Tap for unit sales timeline</span>
-                            </td>
-                            <td className="p-3 font-mono text-slate-600">${row.unitCost.toFixed(2)}</td>
-                            <td className="p-3 font-mono font-bold text-slate-900">{row.qtySold} units</td>
-                            <td className="p-3 font-mono font-black text-slate-900">${row.totalAmount.toFixed(2)}</td>
-                            <td className="p-3 font-bold">
-                              {row.status === 'Cash' && (
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] border border-emerald-200">
-                                  Cash (Paid)
-                                </span>
-                              )}
-                              {row.status === 'Credit' && (
-                                <span className="px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 text-[10px] border border-rose-200">
-                                  Credit Sale
-                                </span>
-                              )}
-                              {row.status === 'Recovered Debt' && (
-                                <span className="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 text-[10px] border border-sky-200 font-extrabold">
-                                  Recovered Debt
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedDrugForModal(row.item);
-                                }}
-                                className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-extrabold rounded-xl transition-all shadow-2xs inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Eye className="w-3 h-3" />
-                                <span>View Units Log</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        .filter(i => (i.item || i.drugName || '').toLowerCase().includes((searchQuery || '').toLowerCase()))
+                        .map((row) => {
+                          const itemName = row.item || row.drugName || 'Essential Medication';
+                          const rowDate = row.date || row.dateTime?.substring(0, 10) || new Date().toISOString().substring(0, 10);
+                          const unitCostVal = typeof row.unitCost === 'number' ? row.unitCost : (typeof row.unitPrice === 'number' ? row.unitPrice * 0.7 : 0);
+                          const qtyVal = row.qtySold || row.quantitySold || 1;
+                          const totalVal = typeof row.totalAmount === 'number' ? row.totalAmount : ((row.unitPrice || 0) * qtyVal);
+
+                          return (
+                            <tr 
+                              key={row.id} 
+                              onClick={() => setSelectedDrugForModal(itemName)}
+                              className="hover:bg-sky-50/80 transition-colors cursor-pointer group"
+                              title={`Tap to view full unit-by-unit sales history for ${itemName}`}
+                            >
+                              <td className="p-3 font-mono text-slate-600 font-semibold">{rowDate}</td>
+                              <td className="p-3">
+                                <div className="font-extrabold text-slate-900 group-hover:text-sky-700 flex items-center gap-1.5">
+                                  <span>{itemName}</span>
+                                  <Eye className="w-3.5 h-3.5 text-sky-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-mono">Tap for unit sales timeline</span>
+                              </td>
+                              <td className="p-3 font-mono text-slate-600">${unitCostVal.toFixed(2)}</td>
+                              <td className="p-3 font-mono font-bold text-slate-900">{qtyVal} units</td>
+                              <td className="p-3 font-mono font-black text-slate-900">${totalVal.toFixed(2)}</td>
+                              <td className="p-3 font-bold">
+                                {row.status === 'Cash' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] border border-emerald-200">
+                                    Cash (Paid)
+                                  </span>
+                                )}
+                                {row.status === 'Credit' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 text-[10px] border border-rose-200">
+                                    Credit Sale
+                                  </span>
+                                )}
+                                {row.status === 'Recovered Debt' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 text-[10px] border border-sky-200 font-extrabold">
+                                    Recovered Debt
+                                  </span>
+                                )}
+                                {row.status !== 'Cash' && row.status !== 'Credit' && row.status !== 'Recovered Debt' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px] border border-slate-200">
+                                    {row.status || 'Paid'}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 text-right">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedDrugForModal(itemName);
+                                  }}
+                                  className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-extrabold rounded-xl transition-all shadow-2xs inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>View Units Log</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {filteredDailySalesItems.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-slate-400 font-semibold">
+                            No sales records found matching the selected branch and date filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1461,11 +1500,11 @@ export default function AdvancedReports({
                                   <tbody className="divide-y divide-slate-100">
                                     {staffSales.map(s => (
                                       <tr key={s.id}>
-                                        <td className="p-2 font-mono">{s.date}</td>
-                                        <td className="p-2 font-bold">{s.item}</td>
-                                        <td className="p-2 font-mono">{s.qtySold}</td>
-                                        <td className="p-2 font-mono font-bold">${s.totalAmount.toFixed(2)}</td>
-                                        <td className="p-2">{s.status}</td>
+                                        <td className="p-2 font-mono">{s.date || s.dateTime?.substring(0, 10) || ''}</td>
+                                        <td className="p-2 font-bold">{s.item || s.drugName || 'Essential Medication'}</td>
+                                        <td className="p-2 font-mono">{s.qtySold || s.quantitySold || 1}</td>
+                                        <td className="p-2 font-mono font-bold">${(Number(s.totalAmount) || 0).toFixed(2)}</td>
+                                        <td className="p-2">{s.status || 'Cash'}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -1623,42 +1662,55 @@ export default function AdvancedReports({
 
             {/* Modal Summary Stats Bar */}
             {(() => {
-              const matchingUnitLogs = filteredUnitSalesLogs.filter(log =>
-                log.drugName.toLowerCase().includes(selectedDrugForModal.toLowerCase()) ||
-                selectedDrugForModal.toLowerCase().includes(log.drugName.toLowerCase())
-              );
+              const drugSearchKey = (selectedDrugForModal || '').toLowerCase().trim();
+              const matchingUnitLogs = filteredUnitSalesLogs.filter(log => {
+                const dName = (log.drugName || '').toLowerCase();
+                return drugSearchKey && (dName.includes(drugSearchKey) || drugSearchKey.includes(dName));
+              });
 
               const modalLogsToRender = (matchingUnitLogs.length > 0) 
                 ? matchingUnitLogs 
                 : filteredDailySalesItems
-                    .filter(i => i.item.toLowerCase().includes(selectedDrugForModal.toLowerCase()))
-                    .map((item, idx) => ({
-                      id: `DYN-${idx}`,
-                      drugName: item.item,
-                      dateTime: `${item.date} 02:15:${10 + idx} PM`,
-                      unitsSold: item.qtySold,
-                      unitPriceUsd: item.unitPrice || (item.totalAmount / item.qtySold),
-                      totalAmountUsd: item.totalAmount,
-                      batchNumber: item.batchNo || 'BATCH-2026-MAIN',
-                      receiptNo: item.receiptNo || `INV-2026-00${idx + 1}`,
-                      customerName: item.customerName || 'Walk-in Customer',
-                      staffName: item.staffName || 'Active Pharmacist',
-                      paymentMethod: item.status === 'Cash' ? 'Cash (SSP)' : item.status,
-                      status: item.status as any
-                    }));
+                    .filter(i => {
+                      const itemName = (i.item || i.drugName || '').toLowerCase();
+                      return drugSearchKey && (itemName.includes(drugSearchKey) || drugSearchKey.includes(itemName));
+                    })
+                    .map((item, idx) => {
+                      const itemName = item.item || item.drugName || 'Essential Medication';
+                      const itemDate = item.date || item.dateTime?.substring(0, 10) || new Date().toISOString().substring(0, 10);
+                      const itemQty = Number(item.qtySold || item.quantitySold || 1) || 1;
+                      const itemTotal = Number(item.totalAmount || 0) || (Number(item.unitPrice || 0) * itemQty);
+                      const unitP = Number(item.unitPrice || (itemTotal / itemQty)) || 0;
+
+                      return {
+                        id: item.id || `DYN-${idx}`,
+                        drugName: itemName,
+                        dateTime: item.dateTime || `${itemDate} 02:15:${10 + idx} PM`,
+                        unitsSold: itemQty,
+                        unitPriceUsd: unitP,
+                        totalAmountUsd: itemTotal,
+                        batchNumber: item.batchNumber || item.batchNo || 'BATCH-2026-MAIN',
+                        receiptNo: item.receiptNo || item.invoiceNumber || `INV-2026-00${idx + 1}`,
+                        customerName: item.customerName || 'Walk-in Customer',
+                        staffName: item.staffName || item.cashierName || 'Active Pharmacist',
+                        paymentMethod: item.status === 'Cash' ? 'Cash (SSP)' : (item.paymentMethod || item.status || 'Cash'),
+                        status: (item.status as any) || 'Cash'
+                      };
+                    });
 
               const filteredModalLogs = modalLogsToRender.filter(log => {
                 if (!unitSearchQuery) return true;
-                const q = unitSearchQuery.toLowerCase();
-                return log.customerName.toLowerCase().includes(q) ||
-                       log.staffName.toLowerCase().includes(q) ||
-                       log.receiptNo.toLowerCase().includes(q) ||
-                       log.batchNumber.toLowerCase().includes(q) ||
-                       log.paymentMethod.toLowerCase().includes(q);
+                const q = unitSearchQuery.toLowerCase().trim();
+                return (log.customerName || '').toLowerCase().includes(q) ||
+                       (log.staffName || '').toLowerCase().includes(q) ||
+                       (log.receiptNo || '').toLowerCase().includes(q) ||
+                       (log.batchNumber || '').toLowerCase().includes(q) ||
+                       (log.paymentMethod || '').toLowerCase().includes(q) ||
+                       (log.drugName || '').toLowerCase().includes(q);
               });
 
-              const modalTotalUnits = filteredModalLogs.reduce((sum, l) => sum + l.unitsSold, 0);
-              const modalTotalUsd = filteredModalLogs.reduce((sum, l) => sum + l.totalAmountUsd, 0);
+              const modalTotalUnits = filteredModalLogs.reduce((sum, l) => sum + (Number(l.unitsSold) || 0), 0);
+              const modalTotalUsd = filteredModalLogs.reduce((sum, l) => sum + (Number(l.totalAmountUsd) || 0), 0);
               const modalAvgPrice = modalTotalUnits > 0 ? modalTotalUsd / modalTotalUnits : 0;
 
               const handleExportPdf = () => {

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { auth, createStaffInFirebaseAuth } from '../lib/firebase';
+import { auth, createStaffInFirebaseAuth, sendStaffPasswordReset } from '../lib/firebase';
 import { 
   deleteStaffAccountFromFirestore, 
   getStaffDocId,
@@ -19,7 +19,11 @@ import {
   ShieldCheck, 
   Edit3,
   X,
-  Lock
+  Lock,
+  Mail,
+  KeyRound,
+  RefreshCw,
+  Send
 } from 'lucide-react';
 import { Tenant, Branch, Staff, StaffRole } from '../types';
 
@@ -34,11 +38,12 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
   const [activeSubTab, setActiveSubTab] = useState<'branches' | 'staff'>('branches');
   
   const activeUserEmail = (userEmail || auth?.currentUser?.email || '').toLowerCase();
-  const isMasterAdmin = activeUserEmail === 'junubposcenter@gmail.com' || activeRole === 'Super Admin' || activeRole === 'Administrator';
+  const isMasterAdmin = activeUserEmail === 'junubposcenter@gmail.com' || activeUserEmail === 'tekkisandereagan@gmail.com' || ['Super Admin', 'Administrator', 'Pharmacy Admin', 'System Admin', 'Master Admin', 'admin'].includes(activeRole) || (activeRole || '').toLowerCase().includes('admin');
   
   // Modals state
   const [showBranchModal, setShowBranchModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
+  const [resetLoadingEmail, setResetLoadingEmail] = useState<string | null>(null);
   
   // Branch form state
   const [branchName, setBranchName] = useState('');
@@ -84,19 +89,35 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     setShowStaffModal(true);
   };
 
+  const handleSendResetEmail = async (targetEmail: string) => {
+    if (!targetEmail) return;
+    setResetLoadingEmail(targetEmail);
+    try {
+      const res = await sendStaffPasswordReset(targetEmail);
+      alert(res.message);
+    } catch (err: any) {
+      alert(err.message || 'Failed to dispatch password reset email.');
+    } finally {
+      setResetLoadingEmail(null);
+    }
+  };
+
   const handleSaveEditStaff = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingStaff) return;
     if (!isMasterAdmin) {
-      alert('Access Restricted: Only Master Admin (junubposcenter@gmail.com) is authorized to edit staff profiles or reassign branches.');
+      alert('Access Restricted: Only Master Admin is authorized to edit staff profiles or reassign branches.');
       return;
     }
     if (!staffName.trim() || !staffEmail.trim()) return;
 
+    const previousBranchId = editingStaff.branchId;
+    const newBranchId = staffBranchId || 'main-branch';
+
     const updatedMember: Staff = {
       ...editingStaff,
-      name: staffName,
-      email: staffEmail.toLowerCase(),
+      name: staffName.trim(),
+      email: staffEmail.toLowerCase().trim(),
       password: staffPassword || (editingStaff as any).password || 'Staff123!',
       role: staffRole,
       branchId: staffBranchId || undefined
@@ -114,7 +135,15 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     onUpdateTenant(updatedTenant);
 
     // Save directly to Firestore staff collection
-    saveStaffAccountToFirestore(updatedMember.branchId || 'main-branch', updatedMember)
+    saveStaffAccountToFirestore(newBranchId, updatedMember)
+      .then(async () => {
+        // If branch location was changed, clean up previous branch collection
+        if (previousBranchId && previousBranchId !== newBranchId) {
+          try {
+            await deleteStaffAccountFromFirestore(previousBranchId, editingStaff.id);
+          } catch (e) {}
+        }
+      })
       .catch(err => console.warn("Notice saving updated staff to Firestore:", err));
 
     // Ensure staff exists in Firebase Authentication
@@ -122,6 +151,7 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
       .catch(err => console.warn("Notice updating user in Firebase Auth:", err));
 
     closeStaffModal();
+    alert(`Staff profile for ${updatedMember.name} updated successfully!\n• Assigned Role: ${updatedMember.role}\n• Branch Location: ${staffBranchId ? (branches.find(b => b.id === staffBranchId)?.name || staffBranchId) : 'Universal / All Branches'}\n• Password recorded in Staff Registry.`);
   };
 
   const closeStaffModal = () => {
@@ -320,6 +350,24 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     const target = updatedBranches.find(b => b.id === branchId);
     if (target) {
       saveBranchToFirestore(branchId, target).catch(err => console.warn(err));
+    }
+  };
+
+  // Change staff role directly
+  const handleChangeStaffRoleDirectly = (staffId: string, newRole: StaffRole) => {
+    const updatedStaff = staff.map(s => 
+      s.id === staffId ? { ...s, role: newRole } : s
+    );
+    
+    onUpdateTenant({
+      ...tenant,
+      staff: updatedStaff
+    });
+
+    const target = updatedStaff.find(s => s.id === staffId);
+    if (target) {
+      saveStaffAccountToFirestore(target.branchId || 'main-branch', target)
+        .catch(err => console.warn("Notice saving updated staff role to Firestore:", err));
     }
   };
 
@@ -643,7 +691,7 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
                 <tbody className="divide-y divide-slate-100 text-xs">
                   {staff.map(member => {
                     const assignedBranch = branches.find(b => b.id === member.branchId);
-                    const isAdminOrOwner = ['Master Admin', 'Administrator'].includes(activeRole);
+                    const isAdminOrOwner = isMasterAdmin || ['Master Admin', 'Administrator', 'Super Admin', 'Pharmacy Admin', 'System Admin'].includes(activeRole) || activeUserEmail === 'junubposcenter@gmail.com';
                     const isVerified = member.isVerified !== false;
 
                     return (
@@ -651,12 +699,31 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
                         <td className="px-6 py-4 font-extrabold text-slate-900">{member.name}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{member.email}</td>
                         <td className="px-6 py-4">
-                          <span className={`px-2 py-1 rounded-xl text-[9px] font-black tracking-wider uppercase ${
-                            member.role === 'Administrator' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                            'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                          }`}>
-                            {member.role}
-                          </span>
+                          {isAdminOrOwner ? (
+                            <select
+                              value={member.role}
+                              onChange={(e) => handleChangeStaffRoleDirectly(member.id, e.target.value as StaffRole)}
+                              className={`px-2.5 py-1 rounded-xl text-[10px] font-black tracking-wider uppercase cursor-pointer border shadow-sm outline-none transition-all ${
+                                member.role === 'Administrator' 
+                                  ? 'bg-indigo-50 text-indigo-800 border-indigo-200 focus:ring-2 focus:ring-indigo-400' 
+                                  : member.role === 'Cashier'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200 focus:ring-2 focus:ring-amber-400'
+                                  : 'bg-emerald-50 text-emerald-800 border-emerald-200 focus:ring-2 focus:ring-emerald-400'
+                              }`}
+                              title="Click to switch staff role"
+                            >
+                              <option value="Pharmacist">Pharmacist</option>
+                              <option value="Administrator">Administrator</option>
+                              <option value="Cashier">Cashier</option>
+                            </select>
+                          ) : (
+                            <span className={`px-2 py-1 rounded-xl text-[9px] font-black tracking-wider uppercase ${
+                              member.role === 'Administrator' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                              'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            }`}>
+                              {member.role}
+                            </span>
+                          )}
                         </td>
                         <td className="px-6 py-4 font-semibold text-slate-700">
                           {assignedBranch ? assignedBranch.name : 'Universal / All Branches'}
@@ -702,6 +769,14 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
                         <td className="px-6 py-4 flex items-center gap-2">
                           {isAdminOrOwner ? (
                             <>
+                              <button
+                                onClick={() => handleSendResetEmail(member.email)}
+                                disabled={resetLoadingEmail === member.email}
+                                className="text-sky-500 hover:text-sky-600 p-1.5 rounded-lg hover:bg-sky-50 transition-colors cursor-pointer disabled:opacity-50"
+                                title="Send Password Reset Link to Staff Email"
+                              >
+                                <Mail className="h-3.5 w-3.5" />
+                              </button>
                               <button
                                 onClick={() => handleStartEditStaff(member)}
                                 className="text-indigo-500 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer"
@@ -896,6 +971,26 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
                   ))}
                 </select>
               </div>
+
+              {editingStaff && (
+                <div className="p-3 bg-sky-50 border border-sky-200 rounded-2xl flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-sky-900 flex items-center gap-1">
+                      <KeyRound className="w-3.5 h-3.5 text-sky-600" /> Firebase Auth Password Reset
+                    </p>
+                    <p className="text-[10px] text-sky-700">Dispatch an email reset link directly to {staffEmail}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={resetLoadingEmail === staffEmail}
+                    onClick={() => handleSendResetEmail(staffEmail)}
+                    className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-[10px] font-extrabold flex items-center gap-1 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                  >
+                    <Mail className="w-3 h-3" />
+                    {resetLoadingEmail === staffEmail ? 'Sending...' : 'Send Reset Link'}
+                  </button>
+                </div>
+              )}
 
               <button
                 type="submit"

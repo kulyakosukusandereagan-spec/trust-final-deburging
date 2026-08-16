@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, createUserWithEmailAndPassword, signOut } from "firebase/auth";
+import { getAuth, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from "firebase/auth";
 import { initializeFirestore, getFirestore, setLogLevel, memoryLocalCache, memoryLruGarbageCollector, Firestore } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
 
@@ -57,6 +57,19 @@ export async function createStaffInFirebaseAuth(email: string, pass: string): Pr
     }
     console.warn(`Notice registering ${email} in Firebase Auth:`, err.message || err);
     return false;
+  }
+}
+
+// Send Password Reset Email directly to staff inbox
+export async function sendStaffPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+  if (!email) return { success: false, message: 'Email address is required.' };
+  try {
+    await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+    return { success: true, message: `Password reset email dispatched successfully to ${email}.` };
+  } catch (err: any) {
+    console.warn('sendPasswordResetEmail notice:', err);
+    const msg = err.message || 'Could not dispatch password reset email.';
+    return { success: false, message: msg };
   }
 }
 

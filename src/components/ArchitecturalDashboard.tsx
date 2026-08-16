@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Activity, 
   ShoppingCart, 
@@ -52,8 +52,8 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
     }
   }, [tenant.usdToSspRate]);
 
-  // Branch clinics list
-  const branches = tenant.branches || [];
+  // Branch clinics list (Active only for operations)
+  const branches = useMemo(() => (tenant.branches || []).filter((b: any) => b && b.isActive !== false), [tenant.branches]);
 
   // Branch Matching Helper
   const isBranchMatch = (itemBranchId?: string, itemBranchName?: string, targetBranchId?: string) => {
@@ -144,16 +144,15 @@ export default function ArchitecturalDashboard({ tenant, activeRole = 'Administr
 
   const todayTx = branchFilteredTx.filter((tx: any) => {
     const txDateStr = tx.createdAt || tx.timestamp || tx.date;
-    if (!txDateStr) return true;
+    if (!txDateStr) return false;
     if (typeof txDateStr === 'string' && txDateStr.startsWith(todayIsoPrefix)) {
       return true;
     }
     const d = new Date(txDateStr);
-    if (isNaN(d.getTime())) return true;
+    if (isNaN(d.getTime())) return false;
     const isLocalToday = d.getFullYear() === todayYear && d.getMonth() === todayMonth && d.getDate() === todayDate;
     const isUtcToday = d.getUTCFullYear() === todayUtcYear && d.getUTCMonth() === todayUtcMonth && d.getUTCDate() === todayUtcDate;
-    const isWithin24h = Math.abs(now.getTime() - d.getTime()) <= 24 * 60 * 60 * 1000;
-    return isLocalToday || isUtcToday || isWithin24h;
+    return isLocalToday || isUtcToday;
   });
 
   // Load operational expenditures and recovered debts from local storage / Firestore, strictly branch filtered

@@ -4,7 +4,7 @@ import {
   Settings, Server, CheckCircle2, CloudLightning, HelpCircle, Activity,
   Cloud, LogIn, LogOut, Loader2, Sparkles, Box, ShoppingCart, BarChart3,
   Radio, Heart, Shield, Pill, Plus, Menu, X, Receipt, Coins, BookOpen,
-  Sun, Moon, Phone, Key, UserCheck, WifiOff, RefreshCw
+  Sun, Moon, Phone, Key, KeyRound, Send, UserCheck, WifiOff, RefreshCw
 } from 'lucide-react';
 import ExpendituresManager from './components/ExpendituresManager';
 import { performComprehensiveFactoryReset } from './utils/factoryReset';
@@ -46,6 +46,10 @@ import {
   createUserWithEmailAndPassword, 
   signOut, 
   onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  sendPasswordResetEmail,
   User as FirebaseUser
 } from 'firebase/auth';
 import {
@@ -291,9 +295,7 @@ export default function App() {
     };
   }, []);
 
-  // Firebase Auth & Sync States — no localStorage session cache. Firebase
-  // Auth's SDK already persists sign-in across page loads on its own; we
-  // simply react to onAuthStateChanged as the single source of truth.
+  // Firebase Auth & Sync States — no localStorage session cache.
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(true);
   const [email, setEmail] = useState('');
@@ -301,6 +303,40 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+
+  // Session Persistence toggle state (Remember Me)
+  const [rememberMe, setRememberMe] = useState<boolean>(true);
+
+  // Forgot Password / Password Reset modal states
+  const [forgotModalOpen, setForgotModalOpen] = useState<boolean>(false);
+  const [forgotEmail, setForgotEmail] = useState<string>('');
+  const [forgotLoading, setForgotLoading] = useState<boolean>(false);
+  const [forgotStatus, setForgotStatus] = useState<{ message: string; isError: boolean } | null>(null);
+
+  const handleSendForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forgotEmail?.trim()) return;
+    setForgotLoading(true);
+    setForgotStatus(null);
+    try {
+      await sendPasswordResetEmail(auth, forgotEmail.trim().toLowerCase());
+      setForgotStatus({
+        message: `Password reset link dispatched to ${forgotEmail.trim()}! Please check your inbox or spam folder to set your password.`,
+        isError: false
+      });
+    } catch (err: any) {
+      console.warn("Forgot password reset notice:", err);
+      let msg = err.message || "Failed to dispatch password reset link.";
+      if (err.code === 'auth/user-not-found') {
+        msg = "No account found with this email address. Please contact your pharmacy administrator.";
+      } else if (err.code === 'auth/invalid-email') {
+        msg = "Please enter a valid email address format.";
+      }
+      setForgotStatus({ message: msg, isError: true });
+    } finally {
+      setForgotLoading(false);
+    }
+  };
 
   useEffect(() => {
     // Proactively guarantee Master Admin (junubposcenter@gmail.com / Reagantekki01) exists in Firebase Auth
@@ -319,15 +355,17 @@ export default function App() {
         setAuthModalOpen(false);
 
         const userEmail = user.email?.toLowerCase();
-        const isMasterAdmin = userEmail === 'junubposcenter@gmail.com';
+        const isMasterAdmin = userEmail === 'junubposcenter@gmail.com' || userEmail === 'tekkisandereagan@gmail.com';
 
-        // Look up this user's staff record across all 3 branches to get
-        // their role and their fixed assigned branch.
+        // Look up this user's staff record across all branches to get their role and assigned branch
         const allStaff = await loadStaffFromFirestore();
         const matchedStaff = userEmail ? allStaff.find((s: any) => s.email?.toLowerCase() === userEmail) : null;
 
         const effectiveRole = matchedStaff?.role || (isMasterAdmin ? 'Administrator' : 'Pharmacist');
         setActiveRole(effectiveRole as any);
+        if (matchedStaff?.branchId) {
+          setSelectedBranchId(matchedStaff.branchId);
+        }
         setActiveTenantId(PHARMACY_ID);
       } else {
         setFirebaseUser(null);
@@ -352,13 +390,40 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Real-time dynamic live sync: whenever Firestore staff list updates,
+  // immediately update the currently logged-in user's role and assigned branch
+  useEffect(() => {
+    if (!firebaseUser?.email || tenants.length === 0) return;
+    const userEmail = firebaseUser.email.toLowerCase().trim();
+    const isMasterAdmin = userEmail === 'junubposcenter@gmail.com' || userEmail === 'tekkisandereagan@gmail.com';
+
+    if (isMasterAdmin) {
+      if (activeRole !== 'Administrator') {
+        setActiveRole('Administrator');
+      }
+      return;
+    }
+
+    const currentStaff = (tenants[0]?.staff || []).find((s: any) => s && s.email && s.email.toLowerCase().trim() === userEmail);
+    if (currentStaff) {
+      if (currentStaff.role && currentStaff.role !== activeRole) {
+        console.log(`[RoleSync] Dynamic live sync updated active role to: ${currentStaff.role}`);
+        setActiveRole(currentStaff.role as StaffRole);
+      }
+      if (currentStaff.branchId && currentStaff.branchId !== selectedBranchId) {
+        console.log(`[BranchSync] Dynamic live sync updated assigned branch to: ${currentStaff.branchId}`);
+        setSelectedBranchId(currentStaff.branchId);
+      }
+    }
+  }, [tenants, firebaseUser, activeRole, selectedBranchId]);
+
   // Ensure a signed-in user has a Firestore staff record. No localStorage —
   // Firestore staff collection is the only source of truth for role/branch.
   useEffect(() => {
     const userEmail = firebaseUser?.email?.toLowerCase();
     if (!userEmail || tenants.length === 0) return;
 
-    const isMasterAdmin = userEmail === 'junubposcenter@gmail.com';
+    const isMasterAdmin = userEmail === 'junubposcenter@gmail.com' || userEmail === 'tekkisandereagan@gmail.com';
     if (isMasterAdmin) setActiveRole('Administrator');
 
     const existing = (tenants[0].staff || []).find((s: any) => s.email?.toLowerCase() === userEmail);
@@ -758,7 +823,7 @@ export default function App() {
                 {!userAssignedBranchId && (
                   <option value="all">🏥 All Outlets (Consolidated Scope)</option>
                 )}
-                {(activeTenant?.branches || []).map((b: any) => (
+                {(activeTenant?.branches || []).filter((b: any) => b && b.isActive !== false).map((b: any) => (
                   <option key={b.id} value={b.id}>
                     📍 {b.name}
                   </option>
@@ -1025,17 +1090,16 @@ export default function App() {
 
                   <form
                     onSubmit={async (e) => {
-                      // Real Firebase Auth sign-in — no hardcoded credentials,
-                      // no local staff-list password checks. Once signed in,
-                      // the onAuthStateChanged listener above resolves this
-                      // user's role and assigned branch from their Firestore
-                      // staff record automatically.
                       e.preventDefault();
                       setAuthLoading(true);
                       setAuthError('');
                       const inputEmail = email?.trim().toLowerCase();
                       const inputPass = password?.trim();
                       try {
+                        // Configure session persistence based on user preference
+                        const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+                        await setPersistence(auth, persistence);
+
                         await signInWithEmailAndPassword(auth, inputEmail, inputPass);
                         setEmail('');
                         setPassword('');
@@ -1044,6 +1108,8 @@ export default function App() {
                         let msg = err.message || 'Authentication failed. Please verify staff credentials.';
                         if (inputEmail === 'junubposcenter@gmail.com' && inputPass === 'Reagantekki01') {
                           try {
+                            const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+                            await setPersistence(auth, persistence);
                             await createUserWithEmailAndPassword(auth, inputEmail, inputPass);
                             setEmail('');
                             setPassword('');
@@ -1054,7 +1120,7 @@ export default function App() {
                           }
                         }
                         if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-                          msg = 'Incorrect email or password. Please verify your staff credentials or contact the Administrator.';
+                          msg = 'Incorrect email or password. Please verify your staff credentials or use Forgot Password.';
                         }
                         setAuthError(msg);
                       } finally {
@@ -1076,7 +1142,20 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase block">Password</label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase block">Password</label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setForgotEmail(email || '');
+                            setForgotStatus(null);
+                            setForgotModalOpen(true);
+                          }}
+                          className="text-[11px] font-bold text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
+                        >
+                          Forgot Password?
+                        </button>
+                      </div>
                       <input
                         type="password"
                         required
@@ -1085,6 +1164,28 @@ export default function App() {
                         placeholder="••••••••"
                         className="w-full text-xs px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-sky-500 bg-slate-50 dark:bg-slate-800 dark:text-white"
                       />
+                    </div>
+
+                    {/* Session Persistence Toggle */}
+                    <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={rememberMe}
+                          onChange={(e) => setRememberMe(e.target.checked)}
+                          className="w-4 h-4 text-sky-600 rounded border-slate-300 dark:border-slate-600 focus:ring-sky-500"
+                        />
+                        <div className="text-left">
+                          <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">
+                            Stay Signed In (Remember Me)
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                            {rememberMe 
+                              ? 'Keeps you signed in on this device. Uncheck if you want to require password on each browser session.'
+                              : 'Session only: will automatically log out when you close the browser tab.'}
+                          </span>
+                        </div>
+                      </label>
                     </div>
 
                     <button
@@ -1229,15 +1330,16 @@ export default function App() {
 
                 <form 
                   onSubmit={async (e) => {
-                    // Real Firebase Auth sign-in only — see the primary sign-in
-                    // form above for the full explanation of why the old
-                    // password-bypass / localStorage-lookup logic was removed.
                     e.preventDefault();
                     setAuthLoading(true);
                     setAuthError('');
                     const inputEmail = email?.trim().toLowerCase();
                     const inputPass = password?.trim();
                     try {
+                      // Configure session persistence based on user preference
+                      const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+                      await setPersistence(auth, persistence);
+
                       await signInWithEmailAndPassword(auth, inputEmail, inputPass);
                       setAuthModalOpen(false);
                       setEmail('');
@@ -1247,6 +1349,8 @@ export default function App() {
                       let msg = err.message || 'Authentication failed. Please verify staff credentials.';
                       if (inputEmail === 'junubposcenter@gmail.com' && inputPass === 'Reagantekki01') {
                         try {
+                          const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+                          await setPersistence(auth, persistence);
                           await createUserWithEmailAndPassword(auth, inputEmail, inputPass);
                           setAuthModalOpen(false);
                           setEmail('');
@@ -1262,7 +1366,7 @@ export default function App() {
                       } else if (err.code === 'auth/invalid-email') {
                         msg = 'Invalid email address format.';
                       } else if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-                        msg = 'Incorrect email or password. Please verify your staff credentials or contact the Administrator.';
+                        msg = 'Incorrect email or password. Please verify your staff credentials or use Forgot Password.';
                       }
                       setAuthError(msg);
                     } finally {
@@ -1284,7 +1388,20 @@ export default function App() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase block">Staff Account Password</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block">Staff Account Password</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForgotEmail(email || '');
+                          setForgotStatus(null);
+                          setForgotModalOpen(true);
+                        }}
+                        className="text-[10px] font-bold text-sky-600 hover:underline cursor-pointer"
+                      >
+                        Forgot Password?
+                      </button>
+                    </div>
                     <input
                       type="password"
                       required
@@ -1293,6 +1410,28 @@ export default function App() {
                       placeholder="••••••••"
                       className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 bg-slate-50/50"
                     />
+                  </div>
+
+                  {/* Session Persistence Toggle (Remember Me) */}
+                  <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                        className="w-3.5 h-3.5 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
+                      />
+                      <div className="text-left">
+                        <span className="text-[11px] font-bold text-slate-800 block">
+                          Remember Me (Stay Signed In)
+                        </span>
+                        <span className="text-[9px] text-slate-500 block">
+                          {rememberMe 
+                            ? 'Stays signed in on this device. Uncheck to prompt login on each visit.' 
+                            : 'Session only: will automatically log out when you close the tab.'}
+                        </span>
+                      </div>
+                    </label>
                   </div>
 
                   <button
@@ -1313,13 +1452,92 @@ export default function App() {
                       </>
                     )}
                   </button>
-
-                  {/* Clean professional login form */}
                 </form>
               </div>
 
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Forgot Password / Firebase Auth Password Reset Modal */}
+      {forgotModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-6 shadow-2xl space-y-5 relative">
+            <button 
+              onClick={() => {
+                setForgotModalOpen(false);
+                setForgotStatus(null);
+              }}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 rounded-2xl border border-sky-100 dark:border-sky-900">
+                <KeyRound className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Reset Staff Password</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Receive a secure password reset link in your email inbox</p>
+              </div>
+            </div>
+
+            {forgotStatus && (
+              <div className={`p-3 rounded-xl text-xs ${
+                forgotStatus.isError 
+                  ? 'bg-rose-50 border border-rose-200 text-rose-800 dark:bg-rose-950 dark:border-rose-900 dark:text-rose-200' 
+                  : 'bg-emerald-50 border border-emerald-200 text-emerald-800 dark:bg-emerald-950 dark:border-emerald-900 dark:text-emerald-200'
+              }`}>
+                {forgotStatus.message}
+              </div>
+            )}
+
+            <form onSubmit={handleSendForgotPassword} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase block">Registered Staff Email</label>
+                <input
+                  type="email"
+                  required
+                  placeholder="e.g. staff@gmail.com"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  className="w-full text-xs px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-sky-500 bg-slate-50 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotModalOpen(false);
+                    setForgotStatus(null);
+                  }}
+                  className="w-1/2 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="w-1/2 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {forgotLoading ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Sending...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send Reset Link</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

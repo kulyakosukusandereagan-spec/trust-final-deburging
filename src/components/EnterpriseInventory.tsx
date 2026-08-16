@@ -4,7 +4,7 @@ import {
   Warehouse, CalendarDays, QrCode, Barcode, Database, Sparkles, 
   TrendingDown, Download, CheckCircle2, Printer, Clock, ArrowUpRight, 
   Activity, Sliders, CheckCircle, RefreshCw, FileText, Info, Trash2, Edit, Check, Eye,
-  Camera, X, Pill, DollarSign, Building2
+  Camera, X, Pill, DollarSign, Building2, Lock
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, 
@@ -93,27 +93,49 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   const [activeTab, setActiveTab] = useState<'registry' | 'batches' | 'transfers' | 'dashboard' | 'adjustments' | 'schema' | 'receiving' | 'qr_scanning'>('registry');
   const usdToSspRate = activeTenant?.usdToSspRate || 1000;
 
+  // Check if current user is an admin
+  const isAdmin = useMemo(() => {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    // System Master Admin accounts
+    if (cleanEmail === 'junubposcenter@gmail.com' || cleanEmail === 'tekkisandereagan@gmail.com') {
+      return true;
+    }
+    // Check if staff profile has explicit role
+    const staffMatch = activeTenant?.staff?.find((s: any) => s.email && cleanEmail && s.email.toLowerCase() === cleanEmail);
+    const effectiveRole = (staffMatch?.role || activeRole || '').trim().toLowerCase();
+    return (
+      effectiveRole === 'administrator' || 
+      effectiveRole === 'super admin' || 
+      effectiveRole === 'system admin' || 
+      effectiveRole === 'master admin' || 
+      effectiveRole === 'pharmacy admin' || 
+      effectiveRole === 'admin'
+    );
+  }, [activeRole, activeTenant?.staff, userEmail]);
+
   // Check if current user is a normal staff member
   const isNormalStaff = useMemo(() => {
-    const role = (activeRole || '').toLowerCase();
-    return ['staff', 'cashier', 'dispenser', 'dispensing cashier', 'pharmacy tech', 'technician'].includes(role);
-  }, [activeRole]);
+    return !isAdmin;
+  }, [isAdmin]);
   
-  // Dynamic Tenant Branches
+  // Dynamic Tenant Branches (Active Only)
   const availableBranches = useMemo(() => {
+    let list: any[] = [];
     if (activeTenant?.branches && activeTenant.branches.length > 0) {
-      return activeTenant.branches;
+      list = activeTenant.branches;
+    } else if (branchesProp && branchesProp.length > 0) {
+      list = branchesProp;
+    } else {
+      list = [{ 
+        id: 'branch-dt-1', 
+        name: activeTenant?.name ? `${activeTenant.name} - Main Branch` : 'Royal Trust Pharmacy - Main Branch', 
+        address: 'Airport Road, Juba Town', 
+        phone: '+211 922 152 427', 
+        isActive: true 
+      }];
     }
-    if (branchesProp && branchesProp.length > 0) {
-      return branchesProp;
-    }
-    return [{ 
-      id: 'branch-dt-1', 
-      name: activeTenant?.name ? `${activeTenant.name} - Main Branch` : 'Royal Trust Pharmacy - Main Branch', 
-      address: 'Airport Road, Juba Town', 
-      phone: '+211 922 152 427', 
-      isActive: true 
-    }];
+    const activeList = list.filter((b: any) => b && b.isActive !== false);
+    return activeList.length > 0 ? activeList : list;
   }, [activeTenant, branchesProp]);
 
   // Dynamic Stores list
@@ -193,7 +215,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   useEffect(() => {
     const effectiveRestricted = restrictedBranchIdProp || (() => {
       if (activeTenant && userEmail) {
-        const currentEmployee = activeTenant.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase());
+        const currentEmployee = activeTenant.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase());
         if (currentEmployee && currentEmployee.branchId && !['Master Admin', 'Administrator', 'Pharmacy Admin'].includes(currentEmployee.role)) {
           return currentEmployee.branchId;
         }
@@ -468,7 +490,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Pharmacist",
+          username: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Pharmacist",
           action: "QR_SCAN_INVENTORY",
           entity_name: "inventory_batches",
           entity_id: data.medicine_id,
@@ -483,6 +505,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   };
 
   const executeQRStockReceiving = async () => {
+    if (!isAdmin) {
+      setQrScanErrorMsg("Permission Denied: Inbound stock receiving is strictly restricted to Administrators.");
+      return;
+    }
     if (!parsedQRData) return;
     try {
       let bId = "";
@@ -506,7 +532,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              username: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Admin",
+              username: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Admin",
               action: "STOCK_RECEIVE_QR",
               entity_name: "inventory_batches",
               entity_id: parsedQRData.medicine_id,
@@ -547,6 +573,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   };
 
   const executeQRBranchTransfer = async () => {
+    if (!isAdmin) {
+      setQrScanErrorMsg("Permission Denied: Stock transfers via QR are strictly restricted to Administrators.");
+      return;
+    }
     if (!parsedQRData) return;
     const sourceBatch = batches.find(b => b.batchNumber === parsedQRData.batch_number || b.drugId === parsedQRData.medicine_id);
     if (!sourceBatch) {
@@ -566,7 +596,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           destinationBranchId: qrTransferDestBranch,
           quantity: qrTransferQty,
           notes: `QR scanner dispatched stock transfer`,
-          username: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Clerk"
+          username: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Inventory Clerk"
         })
       });
       const data = await res.json();
@@ -582,6 +612,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   };
 
   const executeQRAuditSync = async () => {
+    if (!isAdmin) {
+      setQrScanErrorMsg("Permission Denied: Stock discrepancy audits via QR are strictly restricted to Administrators.");
+      return;
+    }
     if (!parsedQRData) return;
     const match = batches.find(b => b.batchNumber === parsedQRData.batch_number || b.drugId === parsedQRData.medicine_id);
     if (!match) return;
@@ -596,7 +630,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
         body: JSON.stringify({
           storeId: match.storeId,
           storeName: match.storeName,
-          checkedBy: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Audit Pharmacist",
+          checkedBy: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Audit Pharmacist",
           status: diff === 0 ? "Completed - Perfect Match" : "Completed with Discrepancies",
           discrepancies: [
             {
@@ -621,6 +655,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   };
 
   const executeQRQuickEdit = async () => {
+    if (!isAdmin) {
+      setQrScanErrorMsg("Permission Denied: Modifying medicine catalog properties via QR is strictly restricted to Administrators.");
+      return;
+    }
     if (!parsedQRData) return;
     const match = batches.find(b => b.batchNumber === parsedQRData.batch_number || b.drugId === parsedQRData.medicine_id);
     if (!match) return;
@@ -643,7 +681,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: activeTenant?.staff?.find((s: any) => s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Dispensary Clerk",
+            username: activeTenant?.staff?.find((s: any) => s.email && userEmail && s.email.toLowerCase() === userEmail.toLowerCase())?.name || "Dispensary Clerk",
             action: "QUICK_EDIT_QR",
             entity_name: "inventory_batches",
             entity_id: match.id,
@@ -755,7 +793,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       showBanner("Strict Online Mode Policy: Internet connection offline. Registering new medicine batches requires an active cloud connection.", "error");
       return;
     }
-    if (activeRole !== 'Administrator') {
+    if (!isAdmin) {
       showBanner("Security Restricted: Registering stock lots is strictly reserved for Administrators.", "error");
       setShowAddBatchModal(false);
       return;
@@ -872,6 +910,11 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   // Handle Adjustment Submit (Lapsed Write-off & Manual Audits)
   const handleAdjustmentSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can perform stock write-offs and inventory adjustments.", "error");
+      setShowAdjustModal(null);
+      return;
+    }
     if (!showAdjustModal) return;
 
     // Verify network connectivity for atomic transaction
@@ -976,6 +1019,11 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   // Handle Transfer Submit
   const handleTransferSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) {
+      showBanner("Permission Denied: Stock transfers and relocations are strictly restricted to Administrators.", "error");
+      setShowTransferModal(null);
+      return;
+    }
     if (!showTransferModal || !transferForm.quantity) return;
 
     const parsedQty = Number(transferForm.quantity);
@@ -1100,6 +1148,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   // Handle Master Product Catalogue Add (CRUD)
   const handleMasterProductSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can register new inventory items.", "error");
+      return;
+    }
     if (!masterProductForm.name || !masterProductForm.price) {
       showBanner("Please fill in the product name and selling price.", "error");
       return;
@@ -1194,6 +1246,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   // Handle Master Product Edit (CRUD)
   const handleUpdateMasterProductSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can edit inventory catalog details.", "error");
+      return;
+    }
     if (!showEditMasterModal) return;
 
     try {
@@ -1268,6 +1324,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
   };
 
   const handleMatchUpdatedRate = (batchId?: string) => {
+    if (!isAdmin) {
+      showBanner("Permission Denied: Rate matching is strictly restricted to Administrators.", "error");
+      return;
+    }
     const updated = batches.map(b => {
       if (!batchId || b.id === batchId) {
         const newItem = {
@@ -1292,8 +1352,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       alert("STRICT ONLINE MODE POLICY: Deleting medicine batch records requires an active internet connection to update cloud inventory databases.");
       return;
     }
-    if (isNormalStaff) {
-      alert("Permission Denied: Normal staff members are not authorized to delete medicine or inventory records.");
+    if (!isAdmin) {
+      alert("Permission Denied: Normal staff members are not authorized to delete medicine or inventory records. This action is strictly restricted to Administrators.");
       return;
     }
     try {
@@ -1334,6 +1394,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
   // Erase All Inventory Data (Complete Reset)
   const handleEraseAllInventory = async () => {
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can clear inventory records.", "error");
+      return;
+    }
     setBatches([]);
     try {
       // Actually delete every batch doc under this branch in Firestore —
@@ -1353,6 +1417,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
   // Add Item to Receiving Lot Draft
   const handleAddReceivingItem = () => {
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can add or register inventory receiving lots.", "error");
+      return;
+    }
     if (!receivingForm.name || !receivingForm.batchNumber || !receivingForm.quantity || !receivingForm.expiryDate || !receivingForm.price) {
       showBanner("Please fill in the product brand name, batch lot, received quantity, sell price, and expiry date.", "error");
       return;
@@ -1399,6 +1467,10 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
   // Reconcile and Post Wholesaler Lot Invoice
   const handlePostReceivingInvoice = async () => {
+    if (!isAdmin) {
+      showBanner("Permission Denied: Only Administrator accounts can reconcile and post inventory intake invoices.", "error");
+      return;
+    }
     if (receivingItems.length === 0) {
       showBanner("Your draft lot invoice contains no items. Add at least one drug lot first.", "error");
       return;
@@ -1855,7 +1927,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
             Medication Profit &amp; Sales Analysis
           </button>
 
-          {activeRole === 'Administrator' ? (
+          {isAdmin ? (
             <div className="flex items-center gap-2">
               <button
                 onClick={handleEraseAllInventory}
@@ -1874,8 +1946,9 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
               </button>
             </div>
           ) : (
-            <div className="px-3.5 py-2 bg-slate-800 border border-slate-700 text-slate-400 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-not-allowed">
-              <span>🔒 Admin Only</span>
+            <div className="px-3.5 py-2 bg-slate-800 border border-slate-700 text-amber-300 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-not-allowed">
+              <Lock className="h-3.5 w-3.5 text-amber-400" />
+              <span>🔒 Admin Only: Stock Management Restricted</span>
             </div>
           )}
         </div>
@@ -2154,7 +2227,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                 <p className="text-[10px] text-slate-500 mt-0.5">Maintain, modify, and decommission master product descriptions. Changes sync down to active inventory shelves.</p>
               </div>
 
-              {activeRole === 'Administrator' ? (
+              {isAdmin ? (
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setShowPdfBranchModal(true)}
@@ -2213,8 +2286,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                     <Download className="h-3.5 w-3.5 text-sky-400" />
                     Download PDF
                   </button>
-                  <div className="text-[10px] text-slate-400 font-bold bg-white px-3 py-1.5 rounded-lg border border-slate-200">
-                    🔒 Admin Access Required
+                  <div className="text-[10px] text-slate-500 font-bold bg-amber-50 border border-amber-200 text-amber-800 px-3 py-1.5 rounded-lg flex items-center gap-1">
+                    🔒 Admin Only (Registration &amp; Edit Locked)
                   </div>
                 </div>
               )}
@@ -2466,7 +2539,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                           </div>
                         </td>
                         <td className="p-4 text-right">
-                          {['Master Admin', 'Administrator', 'Pharmacy Admin', 'Pharmacist', 'Admin', 'Staff'].includes(activeRole) || !activeRole ? (
+                          {isAdmin ? (
                             <div className="flex items-center justify-end gap-1.5">
                               <button
                                 onClick={() => {
@@ -2496,18 +2569,16 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                               >
                                 <Edit className="h-3.5 w-3.5" />
                               </button>
-                              {!isNormalStaff && (
-                                <button
-                                  onClick={() => handleDecommissionMasterProduct(b.drugId || b.id, b.name)}
-                                  title="Decommission Medication Line"
-                                  className="p-1.5 bg-slate-50 border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-100 rounded-lg transition-all cursor-pointer"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              )}
+                              <button
+                                onClick={() => handleDecommissionMasterProduct(b.drugId || b.id, b.name)}
+                                title="Decommission Medication Line"
+                                className="p-1.5 bg-slate-50 border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-100 rounded-lg transition-all cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                           ) : (
-                            <span className="text-[10px] text-slate-400 font-medium font-mono">Read-Only</span>
+                            <span className="text-[10px] text-slate-400 font-medium font-mono px-2 py-0.5 rounded bg-slate-100 border border-slate-200">Read-Only</span>
                           )}
                         </td>
                       </tr>
@@ -2614,15 +2685,19 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                           <td className="p-4 font-mono text-slate-600 font-medium">${(b.cost * b.quantity).toFixed(2)}</td>
                           <td className="p-4">
                             <div className="flex gap-2">
-                              <button
-                                onClick={() => {
-                                  setShowAdjustModal(b);
-                                  setAdjustForm({ quantity: '', type: 'expired', notes: `Write off expired batch lot: ${b.batchNumber}` });
-                                }}
-                                className="px-2 py-1 text-[10px] font-extrabold text-rose-600 bg-rose-50 border border-rose-100 rounded hover:bg-rose-100 cursor-pointer"
-                              >
-                                Lapsed Write-off
-                              </button>
+                              {isAdmin ? (
+                                <button
+                                  onClick={() => {
+                                    setShowAdjustModal(b);
+                                    setAdjustForm({ quantity: '', type: 'expired', notes: `Write off expired batch lot: ${b.batchNumber}` });
+                                  }}
+                                  className="px-2 py-1 text-[10px] font-extrabold text-rose-600 bg-rose-50 border border-rose-100 rounded hover:bg-rose-100 cursor-pointer"
+                                >
+                                  Lapsed Write-off
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-400 font-mono">View Only</span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -2712,16 +2787,22 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                         <td className="p-4 font-mono font-bold text-slate-800">{b.quantity} units</td>
                         <td className="p-4 text-slate-500 font-mono">{b.expiryDate}</td>
                         <td className="p-4">
-                          <button
-                            onClick={() => {
-                              setShowTransferModal(b);
-                              setTransferForm({ destStoreId: b.storeId === 'store-1' ? 'store-2' : 'store-1', quantity: '' });
-                            }}
-                            className="px-3 py-1.5 bg-sky-50 text-sky-600 border border-sky-100 rounded-xl hover:bg-sky-100 transition-all cursor-pointer text-xs font-bold flex items-center gap-1"
-                          >
-                            <ArrowLeftRight className="h-3 w-3" />
-                            Relocate Stock
-                          </button>
+                          {isAdmin ? (
+                            <button
+                              onClick={() => {
+                                setShowTransferModal(b);
+                                setTransferForm({ destStoreId: b.storeId === 'store-1' ? 'store-2' : 'store-1', quantity: '' });
+                              }}
+                              className="px-3 py-1.5 bg-sky-50 text-sky-600 border border-sky-100 rounded-xl hover:bg-sky-100 transition-all cursor-pointer text-xs font-bold flex items-center gap-1"
+                            >
+                              <ArrowLeftRight className="h-3 w-3" />
+                              Relocate Stock
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-mono font-bold bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 inline-flex items-center gap-1">
+                              <Lock className="h-3 w-3" /> Admin Only
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -2753,15 +2834,19 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                       <span className="font-bold text-slate-800 block text-xs">{b.name}</span>
                       <span className="text-[10px] text-slate-400 mt-0.5 font-mono">{b.storeName} | Qty: {b.quantity}</span>
                     </div>
-                    <button
-                      onClick={() => {
-                        setShowAdjustModal(b);
-                        setAdjustForm({ quantity: '', type: 'adjustment', notes: '' });
-                      }}
-                      className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-semibold cursor-pointer transition-all"
-                    >
-                      Audit Correct
-                    </button>
+                    {isAdmin ? (
+                      <button
+                        onClick={() => {
+                          setShowAdjustModal(b);
+                          setAdjustForm({ quantity: '', type: 'adjustment', notes: '' });
+                        }}
+                        className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-semibold cursor-pointer transition-all"
+                      >
+                        Audit Correct
+                      </button>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-mono">View Only</span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -3186,13 +3271,20 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                     </div>
 
                     <div className="pt-2 flex justify-end">
-                      <button
-                        onClick={handleAddReceivingItem}
-                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
-                      >
-                        <Plus className="h-4 w-4" />
-                        Queue Received Lot Item
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          onClick={handleAddReceivingItem}
+                          className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
+                        >
+                          <Plus className="h-4 w-4" />
+                          Queue Received Lot Item
+                        </button>
+                      ) : (
+                        <div className="px-4 py-2 bg-slate-100 border border-slate-200 text-slate-500 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                          <Lock className="h-3.5 w-3.5 text-amber-500" />
+                          <span>Admin Only: Stock Queueing Restricted</span>
+                        </div>
+                      )}
                     </div>
 
                   </div>
@@ -3271,13 +3363,20 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                         </span>
                       </div>
 
-                      <button
-                        onClick={handlePostReceivingInvoice}
-                        className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all animate-pulse"
-                      >
-                        <Check className="h-4 w-4" />
-                        Approve Ingestion &amp; Reconcile Stock
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          onClick={handlePostReceivingInvoice}
+                          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all animate-pulse"
+                        >
+                          <Check className="h-4 w-4" />
+                          Approve Ingestion &amp; Reconcile Stock
+                        </button>
+                      ) : (
+                        <div className="px-4 py-2 bg-slate-100 border border-slate-200 text-slate-500 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                          <Lock className="h-3.5 w-3.5 text-amber-500" />
+                          <span>Admin Only: Inbound Approval Locked</span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -3543,14 +3642,21 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={executeQRStockReceiving}
-                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
-                          >
-                            <Plus className="h-4 w-4" />
-                            Acknowledge Lot &amp; Auto-Reconcile Inventory
-                          </button>
+                          {isAdmin ? (
+                            <button
+                              type="button"
+                              onClick={executeQRStockReceiving}
+                              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
+                            >
+                              <Plus className="h-4 w-4" />
+                              Acknowledge Lot &amp; Auto-Reconcile Inventory
+                            </button>
+                          ) : (
+                            <div className="w-full py-2.5 bg-slate-100 border border-slate-200 text-slate-500 font-extrabold text-xs rounded-xl flex items-center justify-center gap-1.5 font-sans cursor-not-allowed">
+                              <Lock className="h-4 w-4 text-amber-500" />
+                              Admin Only: Inbound Stock Ingestion Locked
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-10 text-center text-slate-400 text-[11px] font-medium leading-relaxed">
@@ -3598,13 +3704,20 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={executeQRBranchTransfer}
-                            className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
-                          >
-                            Execute Branch Transfer &amp; Deduct Source
-                          </button>
+                          {isAdmin ? (
+                            <button
+                              type="button"
+                              onClick={executeQRBranchTransfer}
+                              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
+                            >
+                              Execute Branch Transfer &amp; Deduct Source
+                            </button>
+                          ) : (
+                            <div className="w-full py-2.5 bg-slate-100 border border-slate-200 text-slate-500 font-extrabold text-xs rounded-xl flex items-center justify-center gap-1.5 font-sans cursor-not-allowed">
+                              <Lock className="h-4 w-4 text-amber-500" />
+                              Admin Only: Branch Transfer Locked
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-10 text-center text-slate-400 text-[11px] font-medium leading-relaxed">
@@ -3675,14 +3788,21 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             />
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={executeQRAuditSync}
-                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
-                          >
-                            <Check className="h-4 w-4" />
-                            Synchronize Physical Stock (Post &amp; Log)
-                          </button>
+                          {isAdmin ? (
+                            <button
+                              type="button"
+                              onClick={executeQRAuditSync}
+                              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
+                            >
+                              <Check className="h-4 w-4" />
+                              Synchronize Physical Stock (Post &amp; Log)
+                            </button>
+                          ) : (
+                            <div className="w-full py-2.5 bg-slate-100 border border-slate-200 text-slate-500 font-extrabold text-xs rounded-xl flex items-center justify-center gap-1.5 font-sans cursor-not-allowed">
+                              <Lock className="h-4 w-4 text-amber-500" />
+                              Admin Only: Physical Stock Sync Locked
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-10 text-center text-slate-400 text-[11px] font-medium leading-relaxed">
@@ -3710,7 +3830,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             <div className="space-y-1">
                               <label className="text-[10px] font-bold text-slate-500 uppercase block">Shelf Location</label>
                               <input 
-                                type="text"
+                                type="text" 
                                 value={qrQuickEditLocation}
                                 onChange={e => setQrQuickEditLocation(e.target.value)}
                                 className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-500"
@@ -3719,8 +3839,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             <div className="space-y-1">
                               <label className="text-[10px] font-bold text-slate-500 uppercase block">Wholesale Cost ($)</label>
                               <input 
-                                type="number"
-                                step="0.01"
+                                type="number" 
+                                step="0.01" 
                                 value={qrQuickEditCost}
                                 onChange={e => setQrQuickEditCost(Number(e.target.value))}
                                 className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-500 font-mono"
@@ -3729,8 +3849,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             <div className="space-y-1">
                               <label className="text-[10px] font-bold text-slate-500 uppercase block">Retail Price ($)</label>
                               <input 
-                                type="number"
-                                step="0.01"
+                                type="number" 
+                                step="0.01" 
                                 value={qrQuickEditPrice}
                                 onChange={e => setQrQuickEditPrice(Number(e.target.value))}
                                 className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-500 font-mono"
@@ -3738,13 +3858,20 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={executeQRQuickEdit}
-                            className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
-                          >
-                            Apply Parameter Changes
-                          </button>
+                          {isAdmin ? (
+                            <button
+                              type="button"
+                              onClick={executeQRQuickEdit}
+                              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-1.5 font-sans"
+                            >
+                              Apply Parameter Changes
+                            </button>
+                          ) : (
+                            <div className="w-full py-2.5 bg-slate-100 border border-slate-200 text-slate-500 font-extrabold text-xs rounded-xl flex items-center justify-center gap-1.5 font-sans cursor-not-allowed">
+                              <Lock className="h-4 w-4 text-amber-500" />
+                              Admin Only: Catalog Parameter Editing Locked
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-10 text-center text-slate-400 text-[11px] font-medium leading-relaxed">
@@ -3816,7 +3943,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
       </div>
 
-      {showAddBatchModal && (
+      {showAddBatchModal && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
             <div className="p-6 bg-slate-900 text-white flex justify-between items-center">
@@ -4119,7 +4246,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       )}
 
       {/* MODAL 2: STOCK ADJUSTMENT */}
-      {showAdjustModal && (
+      {showAdjustModal && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full overflow-hidden">
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center">
@@ -4209,7 +4336,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       )}
 
       {/* MODAL 3: STOCK TRANSFER */}
-      {showTransferModal && (
+      {showTransferModal && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full overflow-hidden">
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center">
@@ -4350,7 +4477,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       )}
 
       {/* MODAL 5: ADD MASTER PRODUCT (CRUD) */}
-      {showAddMasterModal && (
+      {showAddMasterModal && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center">
@@ -4675,7 +4802,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       )}
 
       {/* MODAL 6: EDIT MASTER PRODUCT (CRUD) */}
-      {showEditMasterModal && (
+      {showEditMasterModal && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center">

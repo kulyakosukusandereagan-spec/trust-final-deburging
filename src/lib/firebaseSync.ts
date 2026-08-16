@@ -227,22 +227,32 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
       ...targetStaff,
       id: docId,
       email: cleanEmail || targetStaff.email,
-      branchId: targetBranch
+      branchId: targetBranch,
+      updatedAt: new Date().toISOString()
     };
 
-    // Save with deterministic doc ID
+    // Save with deterministic doc ID to target branch
     await setDoc(doc(staffCollectionRef(targetBranch), docId), cleanFirestoreData(dataToSave), { merge: true });
 
-    // Clean up any stale duplicate docs with matching email but different docId
+    // Clean up any stale duplicate docs with matching email across ALL branches
     if (cleanEmail) {
-      try {
-        const snap = await getDocs(staffCollectionRef(targetBranch));
-        for (const d of snap.docs) {
-          if (d.id !== docId && d.data()?.email?.toLowerCase() === cleanEmail) {
-            await deleteDoc(doc(staffCollectionRef(targetBranch), d.id));
+      for (const b of FIXED_BRANCHES) {
+        try {
+          const snap = await getDocs(staffCollectionRef(b.id));
+          for (const d of snap.docs) {
+            const data = d.data();
+            const matchesEmail = (data?.email && data.email.trim().toLowerCase() === cleanEmail) || d.id === docId;
+            // Delete from other branches or delete non-standard doc ID in target branch
+            if (matchesEmail) {
+              if (b.id !== targetBranch) {
+                await deleteDoc(doc(staffCollectionRef(b.id), d.id));
+              } else if (d.id !== docId) {
+                await deleteDoc(doc(staffCollectionRef(b.id), d.id));
+              }
+            }
           }
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
     }
   } catch (err) {
     console.error('[firebaseSync] saveStaffAccountToFirestore error:', err);
@@ -330,8 +340,16 @@ export function subscribeToStaffFirestore(branchIdOrCallback: string | ((staffLi
         const uniqueMap = new Map<string, any>();
         allRaw.forEach((s) => {
           const key = s.email ? s.email.toLowerCase() : s.id;
-          if (key && !uniqueMap.has(key)) {
+          if (!key) return;
+          if (!uniqueMap.has(key)) {
             uniqueMap.set(key, s);
+          } else {
+            const existing = uniqueMap.get(key);
+            const existingTime = existing?.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+            const newTime = s?.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+            if (newTime > existingTime) {
+              uniqueMap.set(key, s);
+            }
           }
         });
         callback(Array.from(uniqueMap.values()));
