@@ -60,7 +60,8 @@ import {
   loadStaffFromFirestore,
   subscribeToStaffFirestore,
   subscribeToPharmacySettingsFirestore,
-  subscribeToBranchesFirestore
+  subscribeToBranchesFirestore,
+  isStaffAuthorized
 } from './lib/firebaseSync';
 
 export default function App() {
@@ -351,22 +352,45 @@ export default function App() {
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        setFirebaseUser(user);
-        setAuthModalOpen(false);
-
-        const userEmail = user.email?.toLowerCase();
+        const userEmail = user.email?.toLowerCase().trim();
         const isMasterAdmin = userEmail === 'junubposcenter@gmail.com' || userEmail === 'tekkisandereagan@gmail.com';
 
-        // Look up this user's staff record across all branches to get their role and assigned branch
-        const allStaff = await loadStaffFromFirestore();
-        const matchedStaff = userEmail ? allStaff.find((s: any) => s.email?.toLowerCase() === userEmail) : null;
+        if (!isMasterAdmin) {
+          // Verify staff authorization status against deleted_staff & active staff registry
+          const authStatus = await isStaffAuthorized(userEmail || '');
+          if (!authStatus.authorized) {
+            console.warn(`[AuthGate] Unauthorized session for ${userEmail}: ${authStatus.reason}`);
+            await signOut(auth).catch(() => {});
+            setFirebaseUser(null);
+            setAuthModalOpen(true);
+            setAuthError(authStatus.reason || 'Access Denied: Your staff profile has been removed or deactivated by the Administrator.');
+            return;
+          }
 
-        const effectiveRole = matchedStaff?.role || (isMasterAdmin ? 'Administrator' : 'Pharmacist');
-        setActiveRole(effectiveRole as any);
-        if (matchedStaff?.branchId) {
-          setSelectedBranchId(matchedStaff.branchId);
+          // Look up this user's staff record across all branches to get their role and assigned branch
+          const allStaff = await loadStaffFromFirestore();
+          const matchedStaff = userEmail ? allStaff.find((s: any) => s.email?.toLowerCase().trim() === userEmail) : null;
+          if (!matchedStaff || matchedStaff.isActive === false) {
+            console.warn(`[AuthGate] Staff record missing or inactive for ${userEmail}`);
+            await signOut(auth).catch(() => {});
+            setFirebaseUser(null);
+            setAuthModalOpen(true);
+            setAuthError('Access Denied: Staff account not found in active registry or has been deactivated.');
+            return;
+          }
+
+          setActiveRole((matchedStaff.role as StaffRole) || 'Pharmacist');
+          if (matchedStaff.branchId) {
+            setSelectedBranchId(matchedStaff.branchId);
+          }
+          setActiveTenantId(PHARMACY_ID);
+        } else {
+          setActiveRole('Administrator');
+          setActiveTenantId(PHARMACY_ID);
         }
-        setActiveTenantId(PHARMACY_ID);
+
+        setFirebaseUser(user);
+        setAuthModalOpen(false);
       } else {
         setFirebaseUser(null);
         setAuthModalOpen(true);
@@ -391,7 +415,8 @@ export default function App() {
   }, []);
 
   // Real-time dynamic live sync: whenever Firestore staff list updates,
-  // immediately update the currently logged-in user's role and assigned branch
+  // immediately update the currently logged-in user's role and assigned branch,
+  // or log them out immediately if their profile was deleted or deactivated.
   useEffect(() => {
     if (!firebaseUser?.email || tenants.length === 0) return;
     const userEmail = firebaseUser.email.toLowerCase().trim();
@@ -405,46 +430,52 @@ export default function App() {
     }
 
     const currentStaff = (tenants[0]?.staff || []).find((s: any) => s && s.email && s.email.toLowerCase().trim() === userEmail);
-    if (currentStaff) {
-      if (currentStaff.role && currentStaff.role !== activeRole) {
-        console.log(`[RoleSync] Dynamic live sync updated active role to: ${currentStaff.role}`);
-        setActiveRole(currentStaff.role as StaffRole);
-      }
-      if (currentStaff.branchId && currentStaff.branchId !== selectedBranchId) {
-        console.log(`[BranchSync] Dynamic live sync updated assigned branch to: ${currentStaff.branchId}`);
-        setSelectedBranchId(currentStaff.branchId);
-      }
+    if (!currentStaff || currentStaff.isActive === false) {
+      console.warn(`[StaffDeleted] Active staff ${userEmail} was deleted or deactivated in Firestore. Logging out immediately.`);
+      signOut(auth).catch(() => {});
+      setFirebaseUser(null);
+      setAuthModalOpen(true);
+      setAuthError('Access Terminated: Your staff profile was deleted or deactivated by the Pharmacy Administrator.');
+      return;
+    }
+
+    if (currentStaff.role && currentStaff.role !== activeRole) {
+      console.log(`[RoleSync] Dynamic live sync updated active role to: ${currentStaff.role}`);
+      setActiveRole(currentStaff.role as StaffRole);
+    }
+    if (currentStaff.branchId && currentStaff.branchId !== selectedBranchId) {
+      console.log(`[BranchSync] Dynamic live sync updated assigned branch to: ${currentStaff.branchId}`);
+      setSelectedBranchId(currentStaff.branchId);
     }
   }, [tenants, firebaseUser, activeRole, selectedBranchId]);
 
-  // Ensure a signed-in user has a Firestore staff record. No localStorage —
-  // Firestore staff collection is the only source of truth for role/branch.
+  // Ensure Master Admin has a Firestore staff record if missing.
+  // NEVER auto-create non-admin staff records if they were deleted!
   useEffect(() => {
-    const userEmail = firebaseUser?.email?.toLowerCase();
+    const userEmail = firebaseUser?.email?.toLowerCase()?.trim();
     if (!userEmail || tenants.length === 0) return;
 
     const isMasterAdmin = userEmail === 'junubposcenter@gmail.com' || userEmail === 'tekkisandereagan@gmail.com';
-    if (isMasterAdmin) setActiveRole('Administrator');
+    if (!isMasterAdmin) return; // Non-admin users are strictly governed by the Admin staff registry
 
-    const existing = (tenants[0].staff || []).find((s: any) => s.email?.toLowerCase() === userEmail);
-    if (existing) return; // already provisioned
+    setActiveRole('Administrator');
+    const existing = (tenants[0].staff || []).find((s: any) => s.email?.toLowerCase()?.trim() === userEmail);
+    if (existing) return; // already exists in Firestore
 
-    const newStaffMember = {
-      id: `staff-user-${Date.now()}`,
-      name: firebaseUser?.displayName || (isMasterAdmin ? 'Administrator' : userEmail.split('@')[0]),
+    const masterAdminMember = {
+      id: `staff-master-admin`,
+      name: 'Pharmacy Administrator',
       email: userEmail,
-      role: (isMasterAdmin ? 'Administrator' : 'Pharmacist') as StaffRole,
+      role: 'Administrator' as StaffRole,
       isActive: true,
       isVerified: true,
       branchId: FIXED_BRANCHES[0].id,
     };
     import('./lib/firebaseSync').then(({ saveStaffAccountToFirestore }) => {
-      saveStaffAccountToFirestore(newStaffMember.branchId, newStaffMember).catch((err) =>
-        console.error('Failed to provision staff record:', err)
+      saveStaffAccountToFirestore(masterAdminMember.branchId, masterAdminMember).catch((err) =>
+        console.error('Failed to provision master admin staff record:', err)
       );
     });
-    // The live subscribeToStaffFirestore listener (set up above) will pick
-    // this up and update `tenants[0].staff` automatically once written.
   }, [firebaseUser, tenants.length]);
 
   const baseTenant = tenants.find(t => t.id === activeTenantId) || tenants[0];
@@ -1096,6 +1127,14 @@ export default function App() {
                       const inputEmail = email?.trim().toLowerCase();
                       const inputPass = password?.trim();
                       try {
+                        const isMaster = inputEmail === 'junubposcenter@gmail.com' || inputEmail === 'tekkisandereagan@gmail.com';
+                        if (!isMaster) {
+                          const authStatus = await isStaffAuthorized(inputEmail);
+                          if (!authStatus.authorized) {
+                            throw new Error(authStatus.reason || 'Access Denied: Your staff account has been deleted or deactivated by the Administrator.');
+                          }
+                        }
+
                         // Configure session persistence based on user preference
                         const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
                         await setPersistence(auth, persistence);
@@ -1336,6 +1375,14 @@ export default function App() {
                     const inputEmail = email?.trim().toLowerCase();
                     const inputPass = password?.trim();
                     try {
+                      const isMaster = inputEmail === 'junubposcenter@gmail.com' || inputEmail === 'tekkisandereagan@gmail.com';
+                      if (!isMaster) {
+                        const authStatus = await isStaffAuthorized(inputEmail);
+                        if (!authStatus.authorized) {
+                          throw new Error(authStatus.reason || 'Access Denied: Your staff account has been deleted or deactivated by the Administrator.');
+                        }
+                      }
+
                       // Configure session persistence based on user preference
                       const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
                       await setPersistence(auth, persistence);

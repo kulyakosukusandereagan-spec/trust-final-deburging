@@ -111,20 +111,30 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
     }
     if (!staffName.trim() || !staffEmail.trim()) return;
 
-    const previousBranchId = editingStaff.branchId;
+    const oldEmail = editingStaff.email ? editingStaff.email.toLowerCase().trim() : '';
+    const newEmail = staffEmail.toLowerCase().trim();
     const newBranchId = staffBranchId || 'main-branch';
 
     const updatedMember: Staff = {
       ...editingStaff,
+      id: getStaffDocId(newEmail),
       name: staffName.trim(),
-      email: staffEmail.toLowerCase().trim(),
+      email: newEmail,
       password: staffPassword || (editingStaff as any).password || 'Staff123!',
       role: staffRole,
       branchId: staffBranchId || undefined
     };
 
+    // If staff email was changed, clean up previous email's Firestore document
+    if (oldEmail && oldEmail !== newEmail) {
+      deleteStaffAccountFromFirestore(editingStaff.branchId || 'main-branch', editingStaff.id, oldEmail)
+        .catch(err => console.warn("Notice cleaning up previous email doc:", err));
+    }
+
     const updatedStaff = staff.map(s => 
-      s.id === editingStaff.id ? updatedMember : s
+      (s.id === editingStaff.id || (s.email && s.email.toLowerCase().trim() === oldEmail))
+        ? updatedMember 
+        : s
     );
 
     const updatedTenant: Tenant = {
@@ -134,16 +144,8 @@ export default function BranchesStaffManager({ tenant, activeRole = 'Administrat
 
     onUpdateTenant(updatedTenant);
 
-    // Save directly to Firestore staff collection
+    // Save directly to Firestore staff collection — saveStaffAccountToFirestore handles clean cross-branch sync
     saveStaffAccountToFirestore(newBranchId, updatedMember)
-      .then(async () => {
-        // If branch location was changed, clean up previous branch collection
-        if (previousBranchId && previousBranchId !== newBranchId) {
-          try {
-            await deleteStaffAccountFromFirestore(previousBranchId, editingStaff.id);
-          } catch (e) {}
-        }
-      })
       .catch(err => console.warn("Notice saving updated staff to Firestore:", err));
 
     // Ensure staff exists in Firebase Authentication

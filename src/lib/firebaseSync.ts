@@ -234,7 +234,14 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
     // Save with deterministic doc ID to target branch
     await setDoc(doc(staffCollectionRef(targetBranch), docId), cleanFirestoreData(dataToSave), { merge: true });
 
-    // Clean up any stale duplicate docs with matching email across ALL branches
+    // Unblock from deleted_staff if previously deleted
+    if (cleanEmail) {
+      try {
+        await deleteDoc(doc(db, 'pharmacy', PHARMACY_ID, 'deleted_staff', getStaffDocId(cleanEmail)));
+      } catch (e) {}
+    }
+
+    // Clean up any stale duplicate docs with matching email across OTHER branches
     if (cleanEmail) {
       for (const b of FIXED_BRANCHES) {
         try {
@@ -242,7 +249,6 @@ export async function saveStaffAccountToFirestore(branchIdOrStaff: string, staff
           for (const d of snap.docs) {
             const data = d.data();
             const matchesEmail = (data?.email && data.email.trim().toLowerCase() === cleanEmail) || d.id === docId;
-            // Delete from other branches or delete non-standard doc ID in target branch
             if (matchesEmail) {
               if (b.id !== targetBranch) {
                 await deleteDoc(doc(staffCollectionRef(b.id), d.id));
@@ -263,6 +269,18 @@ export async function deleteStaffAccountFromFirestore(branchId: string, staffId:
   try {
     const cleanEmail = staffEmail ? staffEmail.trim().toLowerCase() : '';
     const deterministicId = cleanEmail ? getStaffDocId(cleanEmail) : staffId;
+
+    // Record in deleted_staff registry to block future login attempts
+    if (cleanEmail) {
+      try {
+        await setDoc(doc(db, 'pharmacy', PHARMACY_ID, 'deleted_staff', getStaffDocId(cleanEmail)), {
+          email: cleanEmail,
+          staffId: staffId || deterministicId,
+          isDeleted: true,
+          deletedAt: new Date().toISOString()
+        });
+      } catch (e) {}
+    }
 
     for (const b of FIXED_BRANCHES) {
       if (staffId) {
@@ -289,6 +307,47 @@ export async function deleteStaffAccountFromFirestore(branchId: string, staffId:
     }
   } catch (err) {
     console.error('[firebaseSync] deleteStaffAccountFromFirestore error:', err);
+  }
+}
+
+export async function isStaffAuthorized(email: string): Promise<{ authorized: boolean; reason?: string }> {
+  if (!email) return { authorized: false, reason: 'Email is required.' };
+  const cleanEmail = email.trim().toLowerCase();
+  if (cleanEmail === 'junubposcenter@gmail.com' || cleanEmail === 'tekkisandereagan@gmail.com') {
+    return { authorized: true };
+  }
+
+  try {
+    // 1. Check if recorded in deleted_staff registry
+    const deletedSnap = await getDoc(doc(db, 'pharmacy', PHARMACY_ID, 'deleted_staff', getStaffDocId(cleanEmail)));
+    if (deletedSnap.exists() && deletedSnap.data()?.isDeleted) {
+      return { 
+        authorized: false, 
+        reason: 'Access Revoked: Your staff account has been deleted by the Pharmacy Administrator.' 
+      };
+    }
+
+    // 2. Check active staff list across all branches in Firestore
+    const allStaff = await loadStaffFromFirestore();
+    const matched = allStaff.find((s: any) => s.email && s.email.trim().toLowerCase() === cleanEmail);
+    if (!matched) {
+      return { 
+        authorized: false, 
+        reason: 'Access Denied: No active staff profile found for this email in Trust Pharmacy registry.' 
+      };
+    }
+
+    if (matched.isActive === false) {
+      return { 
+        authorized: false, 
+        reason: 'Access Suspended: This staff account has been deactivated by the Administrator.' 
+      };
+    }
+
+    return { authorized: true };
+  } catch (err) {
+    console.warn('[firebaseSync] isStaffAuthorized check error:', err);
+    return { authorized: false, reason: 'Failed to verify staff authorization status.' };
   }
 }
 
