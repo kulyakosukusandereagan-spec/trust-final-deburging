@@ -512,7 +512,17 @@ export function subscribeToBatchesFirestore(branchIdOrCallback: string | ((batch
       batchesCollectionRef(b.id),
       (snapshot) => {
         perBranch.set(b.id, snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
-        callback(Array.from(perBranch.values()).flat());
+        const allBatches = Array.from(perBranch.values()).flat();
+        // Deduplicate batches by batch ID to avoid duplicate keys in UI
+        const seenIds = new Set<string>();
+        const uniqueBatches: any[] = [];
+        for (const item of allBatches) {
+          if (item && item.id && !seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            uniqueBatches.push(item);
+          }
+        }
+        callback(uniqueBatches);
       },
       (err) => console.error('[firebaseSync] subscribeToBatchesFirestore error:', err)
     )

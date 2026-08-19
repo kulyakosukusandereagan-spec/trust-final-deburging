@@ -534,6 +534,9 @@ export default function PharmacyPOS({
     let extractedStrength = '';
     let extractedForm = '';
     let extractedGeneric = '';
+    let extractedPrice: number | null = null;
+    let extractedCost: number | null = null;
+    let extractedExpiry = '';
 
     // Handle JSON 2D QR Code payload
     if (code.startsWith('{') && code.endsWith('}')) {
@@ -546,6 +549,17 @@ export default function PharmacyPOS({
         extractedStrength = parsed.strength || parsed.dosage || '';
         extractedForm = parsed.dosage_form || parsed.form || parsed.type || '';
         extractedGeneric = parsed.generic_name || parsed.genericName || '';
+        if (parsed.selling_price !== undefined || parsed.price !== undefined || parsed.unit_price !== undefined) {
+          const p = Number(parsed.selling_price ?? parsed.price ?? parsed.unit_price);
+          if (!isNaN(p) && p > 0) extractedPrice = p;
+        }
+        if (parsed.purchase_price !== undefined || parsed.cost !== undefined) {
+          const c = Number(parsed.purchase_price ?? parsed.cost);
+          if (!isNaN(c) && c >= 0) extractedCost = c;
+        }
+        if (parsed.expiry_date || parsed.expiryDate || parsed.exp) {
+          extractedExpiry = String(parsed.expiry_date || parsed.expiryDate || parsed.exp);
+        }
       } catch (e) {
         console.warn("JSON scan parse exception", e);
       }
@@ -554,6 +568,10 @@ export default function PharmacyPOS({
       extractedSku = parts[0];
       if (parts[1]) extractedBatch = parts[1];
       if (parts[2]) extractedName = parts[2];
+      if (parts[3]) {
+        const p = Number(parts[3]);
+        if (!isNaN(p) && p > 0) extractedPrice = p;
+      }
     }
 
     // 1. Search in registered barcode mappings
@@ -613,6 +631,15 @@ export default function PharmacyPOS({
       const formText = extractedForm ? ` (${extractedForm})` : '';
       const fullFormattedName = `${nameText}${strengthText}${formText}`;
 
+      // Calculate fallback price: use QR extracted price, or match any similar drug's price, or default
+      const matchedDrugPrice = batches.find(b => 
+        (extractedName && b.name.toLowerCase().includes(extractedName.toLowerCase())) ||
+        (extractedGeneric && b.genericName.toLowerCase().includes(extractedGeneric.toLowerCase()))
+      )?.price;
+
+      const effectivePrice = extractedPrice ?? matchedDrugPrice ?? 15.00;
+      const effectiveCost = extractedCost ?? (effectivePrice * 0.6) ?? 6.50;
+
       matchedBatch = {
         id: `batch-dyn-${Date.now()}`,
         tenantId: activeTenantId,
@@ -626,9 +653,9 @@ export default function PharmacyPOS({
         storeName: availableBranches.find(b => b.id === (selectedStore === 'All' ? (restrictedStoreId || availableBranches[0]?.id || 'store-1') : selectedStore))?.name || availableBranches[0]?.name || 'Main Branch',
         quantity: 100,
         minStockAlert: 15,
-        price: 15.00,
-        cost: 6.50,
-        expiryDate: '2028-12-31',
+        price: effectivePrice,
+        cost: effectiveCost,
+        expiryDate: extractedExpiry || '2028-12-31',
         shelfLocation: 'Aisle A-1, Shelf 1',
         requiresPrescription: false
       };

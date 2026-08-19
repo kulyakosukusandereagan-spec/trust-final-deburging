@@ -933,15 +933,6 @@ export default function AdvancedReports({
 
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={handleEraseClick}
-            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-rose-200"
-            title="Erase all command reports, recent sales, and reset dashboard figures (Admin only)"
-          >
-            <Trash2 className="h-3.5 w-3.5 text-rose-600" />
-            <span>Erase Command Reports</span>
-          </button>
-
-          <button
             onClick={() => handleExportReportPdf('current')}
             className="px-3.5 py-2 bg-sky-600 hover:bg-sky-700 text-white font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
             title="Download PDF for currently active report tab"

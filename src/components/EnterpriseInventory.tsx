@@ -450,15 +450,20 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
             selling_price: found.price
           };
         } else {
-          // Dynamic fallback so scanning ANY code always works
+          // Dynamic fallback so scanning ANY code always works - check if text contains price or similar drug match
+          const matchedDrug = batches.find(b => 
+            (b.name && text.toLowerCase().includes(b.name.toLowerCase())) ||
+            (b.genericName && text.toLowerCase().includes(b.genericName.toLowerCase()))
+          );
+
           data = {
-            medicine_id: `drug-${text.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-            medicine_name: `Scanned Medicine [${text}]`,
-            batch_number: `BCH-${text.toUpperCase()}`,
-            expiry_date: "2028-11-30",
-            branch_id: "store-1",
-            purchase_price: 6.50,
-            selling_price: 15.00
+            medicine_id: `drug-${text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16)}`,
+            medicine_name: matchedDrug?.name || `Scanned Medicine [${text.length > 25 ? text.slice(0, 20) + '...' : text}]`,
+            batch_number: `BCH-${text.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'LOT-SCAN'}`,
+            expiry_date: matchedDrug?.expiryDate || "2028-11-30",
+            branch_id: matchedDrug?.storeId || "store-1",
+            purchase_price: matchedDrug?.cost ?? 6.50,
+            selling_price: matchedDrug?.price ?? 15.00
           };
         }
       }
@@ -829,10 +834,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       // Save directly to Firebase Firestore live
       saveBatchToFirestore(activeTenantId, fallbackBatch as any)
         .catch(e => console.warn("Firestore batch save notice:", e));
-      saveBatchToFirestore(activeTenantId, fallbackBatch as any)
-        .catch(e => console.warn("Firestore batch save notice:", e));
 
-      const updated = [fallbackBatch, ...batches];
+      const updated = [fallbackBatch, ...batches.filter(b => b.id !== fallbackBatch.id)];
       setBatches(updated);
 
       // Dispatch event so POS and other views update instantly
@@ -1160,8 +1163,9 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     const targetBranchId = masterProductForm.storeId || (selectedStore !== 'All' ? selectedStore : (restrictedStoreId || availableBranches[0]?.id || 'store-1'));
     const targetBranch = availableBranches.find(b => b.id === targetBranchId) || availableBranches[0];
 
-    const newDrugId = `drug-master-${Date.now()}`;
-    const newBatchId = `batch-master-${Date.now()}`;
+    const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const newDrugId = `drug-master-${uniqueSuffix}`;
+    const newBatchId = `batch-master-${uniqueSuffix}`;
     const newMasterBatch: InventoryBatch = {
       id: newBatchId,
       tenantId: activeTenantId,
@@ -1199,13 +1203,12 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       console.warn("Server API offline during master registration", err);
     }
 
-    const updatedBatches = [newMasterBatch, ...batches];
+    const updatedBatches = [newMasterBatch, ...batches.filter(b => b.id !== newMasterBatch.id)];
     setBatches(updatedBatches);
     setSearchQuery('');
     setScannedSkus([]);
     setSelectedCategory('All');
     if (!restrictedStoreId) setSelectedStore('All');
-    saveBatchToFirestore(activeTenantId, newMasterBatch).catch(e => console.warn(e));
     saveBatchToFirestore(activeTenantId, newMasterBatch).catch(e => console.warn(e));
 
     showBanner(`Successfully registered ${masterProductForm.name} in master database.`);
@@ -1299,7 +1302,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           sku: masterProductForm.sku || b.sku
         };
         saveBatchToFirestore(activeTenantId, updatedItem).catch(e => console.warn(e));
-        saveBatchToFirestore(activeTenantId, updatedItem).catch(e => console.warn(e));
         return updatedItem;
       }
       return b;
@@ -1334,7 +1336,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
           ...b,
           lockedRate: usdToSspRate
         };
-        saveBatchToFirestore(activeTenantId, newItem).catch(e => console.warn(e));
         saveBatchToFirestore(activeTenantId, newItem).catch(e => console.warn(e));
         return newItem;
       }
@@ -1929,14 +1930,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
 
           {isAdmin ? (
             <div className="flex items-center gap-2">
-              <button
-                onClick={handleEraseAllInventory}
-                className="px-3.5 py-2 bg-rose-600/90 hover:bg-rose-600 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm cursor-pointer transition-all border border-rose-500/30"
-                title="Wipe and clear all inventory records for this branch"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-rose-200" />
-                Erase Inventory
-              </button>
               <button
                 onClick={() => setShowAddBatchModal(true)}
                 className="px-3.5 py-2 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
@@ -2568,13 +2561,6 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                                 className="p-1.5 bg-slate-50 border border-slate-200 text-slate-600 hover:text-sky-600 hover:bg-sky-50 hover:border-sky-100 rounded-lg transition-all cursor-pointer"
                               >
                                 <Edit className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                onClick={() => handleDecommissionMasterProduct(b.drugId || b.id, b.name)}
-                                title="Decommission Medication Line"
-                                className="p-1.5 bg-slate-50 border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-100 rounded-lg transition-all cursor-pointer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </div>
                           ) : (
