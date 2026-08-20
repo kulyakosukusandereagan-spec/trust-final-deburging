@@ -464,9 +464,15 @@ export async function saveBatchToFirestore(branchId: string, batch: any, isOnlin
 }
 
 export async function deleteBatchFromFirestore(branchId: string, batchId: string, _batchName?: string): Promise<void> {
-  const targetBranch = resolveBranchId(branchId);
   try {
-    await deleteDoc(doc(batchesCollectionRef(targetBranch), batchId));
+    if (branchId && isValidBranchId(branchId)) {
+      await deleteDoc(doc(batchesCollectionRef(branchId), batchId));
+      return;
+    }
+    // Delete across branches to ensure single lot is purged everywhere
+    await Promise.all(
+      FIXED_BRANCHES.map((b) => deleteDoc(doc(batchesCollectionRef(b.id), batchId)).catch(() => {}))
+    );
   } catch (err) {
     console.error('[firebaseSync] deleteBatchFromFirestore error:', err);
   }

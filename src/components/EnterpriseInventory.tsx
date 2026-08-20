@@ -1347,8 +1347,8 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
     alert(batchId ? `Item exchange rate matched to active dollar rate (1 USD = ${usdToSspRate.toLocaleString()} SSP).` : `All inventory items matched to active dollar rate (1 USD = ${usdToSspRate.toLocaleString()} SSP).`);
   };
 
-  // Handle Master Product Decommission (CRUD)
-  const handleDecommissionMasterProduct = async (id: string, name: string) => {
+  // Handle Single Lot Deletion strictly one lot at a time (Admin Only)
+  const handleDeleteSingleLot = async (lotId: string, lotName: string, batchNumber?: string, storeId?: string) => {
     if (!checkIsOnline(isOnline)) {
       alert("STRICT ONLINE MODE POLICY: Deleting medicine batch records requires an active internet connection to update cloud inventory databases.");
       return;
@@ -1357,39 +1357,39 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
       alert("Permission Denied: Normal staff members are not authorized to delete medicine or inventory records. This action is strictly restricted to Administrators.");
       return;
     }
+
+    const confirmMsg = `Are you sure you want to permanently delete strictly this single lot: "${lotName}" (Batch: ${batchNumber || lotId})? This action cannot be undone.`;
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
     try {
-      // Delete from Firestore permanently — Firestore is the only source
-      // of truth now, no localStorage deleted-ids ledger needed.
-      const updatedBatches = batches.filter(b => b.id !== id && b.drugId !== id && b.name !== name);
+      // Strictly remove ONLY this exact batch/lot ID from state
+      const updatedBatches = batches.filter(b => b.id !== lotId);
       setBatches(updatedBatches);
 
-      await deleteBatchFromFirestore(activeTenantId, id, name);
+      await deleteBatchFromFirestore(storeId || activeTenantId, lotId, lotName);
 
-      // Send API DELETE & Sync request to backend
+      // Send API DELETE request to backend if available
       try {
-        await fetch(`/api/v1/${activeTenantId}/inventory/${id}?name=${encodeURIComponent(name || '')}`, { method: 'DELETE' });
-        await fetch(`/api/v1/${activeTenantId}/inventory/deleted-batches`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, name, ids: [id, name].filter(Boolean) })
-        });
+        await fetch(`/api/v1/${activeTenantId}/inventory/${lotId}?name=${encodeURIComponent(lotName || '')}`, { method: 'DELETE' });
       } catch (err) {}
 
-      showBanner(`Decommissioned and deleted ${name} permanently from catalog.`);
+      showBanner(`Deleted lot [${batchNumber || lotId}] for ${lotName} permanently.`);
       
       // Log to central HIPAA ledger
       logAuditEvent(
         'Product Update',
-        'PRODUCT_DECOMMISSIONED',
-        `Decommissioned drug product ${name} (ID: ${id}) permanently from catalogs.`,
+        'LOT_DELETED',
+        `Admin permanently deleted single stock lot [${batchNumber || lotId}] for medication "${lotName}" (ID: ${lotId}).`,
         'high',
         undefined,
-        JSON.stringify({ drugId: id, name }),
+        JSON.stringify({ batchId: lotId, batchNumber, name: lotName, branchId: storeId }),
         userEmail,
         activeRole
       );
     } catch (err) {
-      showBanner("Error deleting product.", "error");
+      showBanner("Error deleting lot from cloud.", "error");
     }
   };
 
@@ -2501,6 +2501,7 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                         <td className="p-4 font-semibold text-slate-600">{b.category}</td>
                         <td className="p-4 text-slate-600">
                           <div className="font-semibold">{b.storeName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono mt-0.5">Lot: <span className="font-bold text-slate-700">{b.batchNumber || 'N/A'}</span></div>
                           <div className="text-[9px] text-slate-400 font-mono mt-0.5">Shelf: {b.shelfLocation}</div>
                         </td>
                         <td className="p-4">
@@ -2561,6 +2562,13 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                                 className="p-1.5 bg-slate-50 border border-slate-200 text-slate-600 hover:text-sky-600 hover:bg-sky-50 hover:border-sky-100 rounded-lg transition-all cursor-pointer"
                               >
                                 <Edit className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteSingleLot(b.id, b.name, b.batchNumber, b.storeId)}
+                                title="Admin: Delete strictly this single lot"
+                                className="p-1.5 bg-slate-50 border border-slate-200 text-slate-500 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 rounded-lg transition-all cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </div>
                           ) : (
@@ -2672,15 +2680,24 @@ export default function EnterpriseInventory({ activeTenantId, activeRole = 'Phar
                           <td className="p-4">
                             <div className="flex gap-2">
                               {isAdmin ? (
-                                <button
-                                  onClick={() => {
-                                    setShowAdjustModal(b);
-                                    setAdjustForm({ quantity: '', type: 'expired', notes: `Write off expired batch lot: ${b.batchNumber}` });
-                                  }}
-                                  className="px-2 py-1 text-[10px] font-extrabold text-rose-600 bg-rose-50 border border-rose-100 rounded hover:bg-rose-100 cursor-pointer"
-                                >
-                                  Lapsed Write-off
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => {
+                                      setShowAdjustModal(b);
+                                      setAdjustForm({ quantity: '', type: 'expired', notes: `Write off expired batch lot: ${b.batchNumber}` });
+                                    }}
+                                    className="px-2 py-1 text-[10px] font-extrabold text-rose-600 bg-rose-50 border border-rose-100 rounded hover:bg-rose-100 cursor-pointer"
+                                  >
+                                    Lapsed Write-off
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteSingleLot(b.id, b.name, b.batchNumber, b.storeId)}
+                                    title="Admin: Delete strictly this single lot"
+                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-all cursor-pointer"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
                               ) : (
                                 <span className="text-[10px] text-slate-400 font-mono">View Only</span>
                               )}
